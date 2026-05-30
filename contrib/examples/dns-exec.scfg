@@ -1,0 +1,49 @@
+# ACME DNS-01 example using a custom hook.
+#
+# gibcert calls the command as:
+#   /usr/local/libexec/gibcert-dns-hook present
+#   /usr/local/libexec/gibcert-dns-hook cleanup
+#
+# The hook receives DNSREC_OPERATION, DNSREC_RECORD_TYPE,
+# DNSREC_RECORD_OWNER, DNSREC_RECORD_RDATA, DNSREC_DOMAIN,
+# DNSREC_IDENTIFIER, DNSREC_TIMEOUT, DNSREC_FIELD_*, and DNSREC_SECRET_*
+# environment variables. See docs/dns-record-protocol.md.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider custom-dns {
+	type dns
+	driver exec
+	command /usr/local/libexec/gibcert-dns-hook
+	zone example.com
+
+	secret token {
+		file /etc/gibcert/custom-dns-token
+	}
+}
+
+certificate wildcard-example.com {
+	account letsencrypt
+	names example.com *.example.com
+
+	challenge dns-01 {
+		provider custom-dns
+		propagation-timeout 120s
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy app {
+		fullchain /etc/app/tls/example.com/fullchain.pem
+		key /etc/app/tls/example.com/privkey.pem
+		owner root
+		group app
+		mode 0640
+		after "systemctl reload app"
+	}
+}

@@ -1,0 +1,61 @@
+# DNS-01 with alias mode.
+#
+# This pattern lets you keep DNS API credentials scoped to a separate alias
+# zone instead of your production DNS. Pre-publish a CNAME from
+# _acme-challenge.<domain> to the alias target, then point gibcert's DNS
+# provider credentials at the alias zone only.
+#
+# Two variants are shown below. Pick one per certificate.
+#
+# Variant A: alias-domain
+#   _acme-challenge.example.com.  CNAME  _acme-challenge.example.com.alias.example.
+#   gibcert publishes TXT at _acme-challenge.example.com.alias.example.
+#
+# Variant B: alias-fqdn
+#   _acme-challenge.example.com.  CNAME  shared-record.alias.example.
+#   gibcert publishes TXT at shared-record.alias.example.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider alias-zone {
+	type dns
+	driver rfc2136
+	server ns1.alias.example
+	zone alias.example
+	secret tsig-key {
+		file /etc/gibcert/alias.example.key
+	}
+}
+
+certificate example.com-by-domain {
+	account letsencrypt
+	names example.com www.example.com
+
+	challenge dns-01 {
+		provider alias-zone
+		alias-domain alias.example
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+	}
+}
+
+certificate example.com-by-fqdn {
+	account letsencrypt
+	names example.com
+
+	challenge dns-01 {
+		provider alias-zone
+		alias-fqdn shared-record.alias.example
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com-alt/fullchain.pem
+		key /etc/nginx/tls/example.com-alt/privkey.pem
+	}
+}

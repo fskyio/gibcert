@@ -1,0 +1,224 @@
+#compdef gibcert
+# zsh completion for gibcert
+
+_gibcert() {
+    local state line
+    typeset -A opt_args
+
+    _arguments \
+        '(-c --config)'{-c,--config}'[path to config file]:config file:_files' \
+        '--state-dir[path to state directory]:state dir:_files -/' \
+        '--log-format[log format]:format:(text json)' \
+        '--syslog[also send logs to syslog]' \
+        '1: :_gibcert_commands' \
+        '*:: :->args'
+
+    case $state in
+    args)
+        case $words[1] in
+        issue)
+            _arguments \
+                '--new-key[force certificate key rotation]' \
+                '1: :_gibcert_certs'
+            ;;
+        apply)
+            _arguments '--yes[approve externally visible actions]'
+            ;;
+		renew)
+			_arguments \
+				'--max-jitter[sleep up to duration before each renewal]:duration' \
+				'--no-jitter[disable renewal jitter]' \
+				'--verbose[print renewal activity]'
+			;;
+		account)
+			_arguments '1: :_gibcert_account_subcmds' '*:: :->accountargs'
+			case $state in
+			accountargs)
+				case $words[1] in
+				rotate-key)
+					_arguments '1: :_gibcert_accounts'
+					;;
+				esac
+				;;
+			esac
+			;;
+		deploy|show)
+			_arguments '1: :_gibcert_certs'
+			;;
+        revoke)
+            _arguments \
+                '--reason[revocation reason]:reason:(unspecified keycompromise cacompromise affiliationchanged superseded cessationofoperation certificatehold removefromcrl privilegewithdrawn aacompromise)' \
+                '--reissue[issue and deploy a replacement]' \
+                '--yes[approve revocation]' \
+                '1: :_gibcert_certs'
+            ;;
+        delete)
+            _arguments \
+                '--undeploy[remove last deployed files when content still matches]' \
+                '--revoke[revoke before deleting local state]' \
+                '--reason[revocation reason]:reason:(unspecified keycompromise cacompromise affiliationchanged superseded cessationofoperation certificatehold removefromcrl privilegewithdrawn aacompromise)' \
+                '--yes[approve deletion]' \
+                '1: :_gibcert_certs'
+            ;;
+        rename)
+            _arguments \
+                '1:old name:_gibcert_certs' \
+                '2:new name'
+            ;;
+        ca)
+            _arguments '1: :_gibcert_ca_subcmds' '*:: :->caargs'
+            case $state in
+            caargs)
+                case $words[1] in
+                show|export)
+                    _arguments '1: :_gibcert_cas'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        dns-persist)
+            _arguments '1: :_gibcert_dns_persist_subcmds' '*:: :->dpargs'
+            case $state in
+            dpargs)
+                case $words[1] in
+                install)
+                    _arguments \
+                        '--print[print the record without writing it]' \
+                        '1: :_gibcert_certs'
+                    ;;
+                check)
+                    _arguments '1: :_gibcert_certs'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        import)
+            _arguments '1: :_gibcert_import_sources' '*:: :->importargs'
+            case $state in
+            importargs)
+                case $words[1] in
+                acme.sh)
+                    _arguments \
+                        '--dry-run[print what would be imported without writing]' \
+                        '--force[overwrite existing canonical state]' \
+                        '--name[store a single imported certificate under this name]:name' \
+                        '*--only[import only this cert]:cert name:_gibcert_certs' \
+                        '1:path:_files -/'
+                    ;;
+                certbot)
+                    _arguments \
+                        '--dry-run[print what would be imported without writing]' \
+                        '--force[overwrite existing canonical state]' \
+                        '--name[store a single imported certificate under this name]:name' \
+                        '*--only[import only this cert]:cert name:_gibcert_certs' \
+                        '1:path:_files -/'
+                    ;;
+                dehydrated)
+                    _arguments \
+                        '--dry-run[print what would be imported without writing]' \
+                        '--force[overwrite existing canonical state]' \
+                        '--name[store a single imported certificate under this name]:name' \
+                        '*--only[import only this cert]:cert name:_gibcert_certs' \
+                        '1:path:_files -/'
+                    ;;
+                lego)
+                    _arguments \
+                        '--dry-run[print what would be imported without writing]' \
+                        '--force[overwrite existing canonical state]' \
+                        '--name[store a single imported certificate under this name]:name' \
+                        '*--only[import only this cert]:cert name:_gibcert_certs' \
+                        '1:path:_files -/'
+                    ;;
+                pem)
+                    _arguments \
+                        '--dry-run[print what would be imported without writing]' \
+                        '--force[overwrite existing canonical state]' \
+                        '--name[store imported certificate under this name]:name' \
+                        '--cert[leaf certificate PEM]:file:_files' \
+                        '--chain[chain certificate PEM]:file:_files' \
+                        '--fullchain[fullchain PEM]:file:_files' \
+                        '--key[private key PEM]:file:_files'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        completion)
+            _arguments '1: :(bash zsh fish)'
+            ;;
+        help)
+            _arguments '1: :_gibcert_commands'
+            ;;
+        esac
+        ;;
+    esac
+}
+
+_gibcert_commands() {
+    local -a commands
+    commands=(
+        'help:show usage'
+        'version:print build version information'
+        'check:parse and validate the config'
+        'plan:show what apply would change'
+        'apply:reconcile state with config'
+        'issue:issue one certificate'
+        'renew:renew due certificates and deploy changed material'
+        'account:manage ACME accounts'
+        'ca:list, show, or export CA profiles'
+        'dns-persist:manage dns-persist-01 standing records'
+        'deploy:deploy stored certificate material to configured targets'
+        'revoke:revoke a stored certificate at the CA'
+        'delete:remove local certificate state, optionally undeploying'
+        'rename:rename stored certificate state'
+        'list:list configured certificates and local status'
+        'show:show certificate config and local status'
+        'import:import certificate material from another client or PEM files'
+        'completion:generate shell completion scripts'
+    )
+    _describe 'command' commands
+}
+
+_gibcert_certs() {
+    local -a certs
+    certs=(${(f)"$(gibcert __complete certs 2>/dev/null)"})
+    _describe 'certificate' certs
+}
+
+_gibcert_cas() {
+    local -a cas
+    cas=(${(f)"$(gibcert __complete cas 2>/dev/null)"})
+    _describe 'CA' cas
+}
+
+_gibcert_accounts() {
+    local -a accounts
+    accounts=(${(f)"$(gibcert __complete accounts 2>/dev/null)"})
+    _describe 'account' accounts
+}
+
+_gibcert_ca_subcmds() {
+    local -a subcmds
+    subcmds=('list:list CA profiles' 'show:show CA details' 'export:export CA certificate')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_account_subcmds() {
+    local -a subcmds
+    subcmds=('rotate-key:rotate an ACME account key')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_dns_persist_subcmds() {
+    local -a subcmds
+    subcmds=('install:install standing DNS record' 'check:check standing DNS record')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_import_sources() {
+    _describe 'source' '(acme.sh:import from acme.sh certbot:import from certbot dehydrated:import from dehydrated lego:import from lego pem:import explicit PEM files)'
+}
+
+_gibcert

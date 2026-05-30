@@ -1,0 +1,44 @@
+# ACME DNS-01 example using the PowerDNS authoritative API.
+#
+# Store only the API token in /etc/gibcert/powerdns-api-key with mode 0600.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider powerdns {
+	type dns
+	driver powerdns
+	api-url https://ns.example.com
+	server-id localhost
+	ttl 60
+	propagation provider
+
+	secret api-key {
+		file /etc/gibcert/powerdns-api-key
+	}
+}
+
+certificate wildcard-example.com {
+	account letsencrypt
+	names example.com *.example.com
+
+	challenge dns-01 {
+		provider powerdns
+		propagation-timeout 120s
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy web {
+		fullchain /etc/ssl/private/example.com/fullchain.pem
+		key /etc/ssl/private/example.com/privkey.pem
+		owner root
+		group root
+		mode 0600
+		after "systemctl reload nginx"
+	}
+}

@@ -1,0 +1,181 @@
+.TH GIBCERT 1
+.SH NAME
+gibcert \- manage ACME and local CA certificates
+.SH SYNOPSIS
+.B gibcert
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-state\-dir\fR \fIPATH\fR]
+[\fB\-\-log\-format\fR \fIFORMAT\fR]
+[\fB\-\-syslog\fR]
+\fICOMMAND\fR
+[\fIARGS\fR]
+.SH DESCRIPTION
+.B gibcert
+reads a declarative configuration, issues or renews certificates through ACME
+or a local CA, stores canonical certificate material in a state directory, and
+deploys changed files to configured service paths.
+.PP
+Global flags must appear before the command name.
+.SH GLOBAL OPTIONS
+.TP
+.B \-\-config \fIPATH\fR, \fB\-c\fR \fIPATH\fR
+Path to the config file. Defaults to the platform config path.
+.TP
+.B \-\-state\-dir \fIPATH\fR
+Path to the state directory. Defaults to the platform state path.
+.TP
+.B \-\-log\-format \fIFORMAT\fR
+Log format. Supported values are text and json. The default is text.
+.TP
+.B \-\-syslog
+Also send logs to syslog.
+.SH COMMANDS
+.TP
+.B help [\fICOMMAND\fR]
+Show global usage or command-specific usage.
+.TP
+.B version
+Print build version information.
+.TP
+.B check
+Parse and validate the config, then run preflight checks.
+.TP
+.B plan
+Show what apply would change.
+.TP
+.B apply [\fB\-\-yes\fR]
+Reconcile state and deployed files with the config. Prints a plan, confirms
+externally visible ACME actions unless \fB\-\-yes\fR is set, issues or renews
+due certificates, then deploys configured material.
+.TP
+.B issue [\fB\-\-new\-key\fR] \fICERTIFICATE\fR
+Issue one configured certificate. \fB\-\-new\-key\fR forces certificate key
+rotation even when the config uses key reuse.
+.TP
+.B renew [\fB\-\-max\-jitter\fR \fIDURATION\fR] [\fB\-\-no\-jitter\fR] [\fB\-\-verbose\fR]
+Renew due certificates and deploy changed material. The default ACME renewal
+jitter is 5m. When before-expiry is unset, the renewal window is one third of
+the current certificate lifetime, capped at 30 days. \fB\-\-no\-jitter\fR
+disables jitter.
+.TP
+.B account rotate-key \fIACCOUNT\fR
+Rotate an existing ACME account key using ACME account key rollover. The
+account must already be registered locally. gibcert archives the previous
+local account.key next to the new key. For implicit accounts created by
+certificate ca references, use ca:<ca-name>.
+.TP
+.B ca list
+List built-in and configured CA profiles.
+.TP
+.B ca show \fICA\fR
+Show one CA profile and, for local CAs, its local status and canonical paths.
+For ACME CAs, also fetch and print the directory metadata (terms of service,
+website, ARI endpoint, whether external account binding is required, and
+recognised CAA identities).
+.TP
+.B ca export [\fB\-\-der\fR] \fICA\fR
+Write a local CA certificate to stdout, as PEM by default or as binary DER
+with \fB\-\-der\fR.
+.TP
+.B dns-persist install [\fB\-\-print\fR] \fICERTIFICATE\fR
+Install the dns-persist-01 standing TXT record for each name in the
+certificate using the certificate's configured DNS provider. With
+\fB\-\-print\fR, print the records without writing them. Wildcard names are
+installed with policy=wildcard.
+.TP
+.B dns-persist check \fICERTIFICATE\fR
+Look up the standing TXT record for each name in the certificate and verify
+it authorizes the configured account at the configured CA. Wildcard names
+require policy=wildcard.
+.TP
+.B deploy \fICERTIFICATE\fR
+Deploy stored canonical material for one configured certificate.
+.TP
+.B revoke [\fB\-\-reason\fR \fIREASON\fR] [\fB\-\-reissue\fR] [\fB\-\-yes\fR] \fICERTIFICATE\fR
+Revoke a stored ACME certificate at the CA. \fB\-\-reissue\fR issues and
+deploys a replacement with a new key.
+.TP
+.B delete [\fB\-\-undeploy\fR] [\fB\-\-revoke\fR] [\fB\-\-reason\fR \fIREASON\fR] [\fB\-\-yes\fR] \fICERTIFICATE\fR
+Remove local certificate state. \fB\-\-undeploy\fR removes previously deployed
+files only when their content still matches gibcert metadata.
+.TP
+.B rename \fIOLD-NAME\fR \fINEW-NAME\fR
+Rename stored certificate state and update the stored metadata name. This does
+not edit the configuration file; if the old name is still configured, gibcert
+prints a warning.
+.TP
+.B list
+List configured certificates with compact certificate, issuer, renewal, and
+deploy status.
+.TP
+.B show \fICERTIFICATE\fR
+Show one configured certificate, its status, issuer/account context, renewal
+timing, stored metadata, canonical paths, TLSA state, and deploy targets with
+per-file status.
+.TP
+.B import acme.sh [\fB\-\-dry\-run\fR] [\fB\-\-only\fR \fINAME\fR]... [\fB\-\-name\fR \fINAME\fR] [\fB\-\-force\fR] \fIPATH\fR
+Import certificate material from an acme.sh state directory. The
+\fB\-\-only\fR selector matches either the acme.sh directory name or the
+default gibcert target name, such as example.com_ecc or example.com-ecc.
+\fB\-\-name\fR overrides the gibcert state name when exactly one certificate
+is selected.
+.TP
+.B import certbot [\fB\-\-dry\-run\fR] [\fB\-\-only\fR \fINAME\fR]... [\fB\-\-name\fR \fINAME\fR] [\fB\-\-force\fR] \fIPATH\fR
+Import certificate material from a Certbot state directory (typically
+/etc/letsencrypt). Scans live/ for certificate directories, reads the
+leaf certificate, private key, and chain from symlinks, and extracts
+the ACME directory URL from renewal/<name>.conf.
+.TP
+.B import dehydrated [\fB\-\-dry\-run\fR] [\fB\-\-only\fR \fINAME\fR]... [\fB\-\-name\fR \fINAME\fR] [\fB\-\-force\fR] \fIPATH\fR
+Import certificate material from a dehydrated base directory. Scans
+certs/ for per-certificate directories, reads cert.pem, privkey.pem,
+and chain.pem following symlinks, and extracts the ACME directory URL
+from the config file.
+.TP
+.B import lego [\fB\-\-dry\-run\fR] [\fB\-\-only\fR \fINAME\fR]... [\fB\-\-name\fR \fINAME\fR] [\fB\-\-force\fR] \fIPATH\fR
+Import certificate material from a lego state directory (typically .lego).
+Scans certificates/ for key files and reads companion .crt and .issuer.crt
+files. When .issuer.crt is present, it is used as the chain; otherwise
+the .crt file is split into leaf and chain.
+.TP
+.B import pem [\fB\-\-dry\-run\fR] [\fB\-\-force\fR] \fB\-\-name\fR \fINAME\fR \fB\-\-key\fR \fIKEY\fR (\fB\-\-cert\fR \fICERT\fR [\fB\-\-chain\fR \fICHAIN\fR] | \fB\-\-fullchain\fR \fIFULLCHAIN\fR)
+Import explicit PEM certificate material. gibcert derives names, serial
+number, validity, and expiry from the leaf certificate. Renewal configuration,
+ACME account settings, challenges, and deploy targets still come from the
+configuration file.
+.SH REVOCATION REASONS
+Supported revocation reasons are unspecified, key-compromise, ca-compromise,
+affiliation-changed, superseded, cessation-of-operation, certificate-hold,
+privilege-withdrawn, and aa-compromise.
+.SH FILES
+.TP
+.I /etc/gibcert/gibcert.scfg
+Default config path for root on FHS-style Unix systems.
+.TP
+.I /var/lib/gibcert
+Default state directory for root on FHS-style Unix systems.
+.SH ENVIRONMENT
+.TP
+.B GIBCERT_CONFIG
+Override the config path.
+.TP
+.B GIBCERT_STATE_DIR
+Override the state directory.
+.TP
+.B GIBCERT_RUNTIME_DIR
+Override the runtime directory.
+.TP
+.B GIBCERT_CACHE_DIR
+Override the cache directory.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Runtime error, config error, validation error, or cancelled confirmation.
+.TP
+.B 2
+Usage error or unsupported flag value.
+.SH SEE ALSO
+.BR gibcert.scfg (5)

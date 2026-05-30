@@ -1,0 +1,50 @@
+# Issuer failover.
+#
+# gibcert normally issues a certificate from a single issuer: the certificate's
+# `account` or `ca`. The `failover` block lists alternate ACME issuers to try
+# when the primary cannot issue -- a CA outage, a rate-limit, or a requested
+# profile the primary does not offer.
+#
+# The primary is always tried first; a failover is only reached when every
+# preceding issuer fails. On the next run gibcert tries the primary again, so a
+# transient outage never strands the certificate on a backup CA.
+
+account zerossl {
+	ca zerossl
+	eab {
+		kid your-zerossl-kid
+		hmac-key {
+			file /etc/gibcert/zerossl.hmac
+		}
+	}
+}
+
+account sectigo {
+	ca buypass
+	email admin@example.com
+}
+
+certificate example.com {
+	# Primary issuer.
+	account zerossl
+
+	names example.com www.example.com
+
+	# Tried in order when zerossl cannot issue. `ca letsencrypt` uses the
+	# built-in CA profile via its implicit "ca:letsencrypt" account; explicit
+	# accounts and ca references can be mixed freely.
+	failover {
+		ca letsencrypt
+		account sectigo
+	}
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+		after "systemctl reload nginx"
+	}
+}

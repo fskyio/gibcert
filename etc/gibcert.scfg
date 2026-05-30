@@ -1,0 +1,11 @@
+# Main gibcert configuration file.
+#
+# This file is intentionally minimal. Add local configuration snippets as:
+#
+#   /etc/gibcert/conf.d/*.scfg
+#
+# For complete examples, see:
+#
+#   /usr/share/doc/gibcert/examples/
+
+include /etc/gibcert/conf.d/*.scfg

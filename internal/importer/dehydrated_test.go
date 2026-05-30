@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 FSKY <development@fsky.io>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package importer
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"foundry.fsky.io/fsky/gibcert/internal/storage"
+)
+
+func writeDehydratedDir(t *testing.T, baseDir, alias string, fc fakeCert, config string) {
+	t.Helper()
+	certDir := filepath.Join(baseDir, "certs", alias)
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "cert.pem"), fc.leafPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "privkey.pem"), fc.keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "chain.pem"), fc.leafPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if config != "" {
+		if err := os.WriteFile(filepath.Join(baseDir, "config"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestImportDehydratedHappyPath(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	notAfter := time.Now().Add(60 * 24 * time.Hour)
+	fc := makeCert(t, false, []string{"example.com", "www.example.com"}, notAfter)
+	writeDehydratedDir(t, src, "example.com", fc,
+		`CA="letsencrypt"`+"\n")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatalf("ImportDehydrated: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results=%d, want 1", len(results))
+	}
+	r := results[0]
+	if r.Status != StatusImported {
+		t.Fatalf("status=%q detail=%q, want imported", r.Status, r.Detail)
+	}
+	if r.Name != "example.com" {
+		t.Fatalf("name=%q, want example.com", r.Name)
+	}
+
+	meta, err := store.LoadCertMeta("example.com")
+	if err != nil {
+		t.Fatalf("LoadCertMeta: %v", err)
+	}
+	if meta.Directory != "https://acme-v02.api.letsencrypt.org/directory" {
+		t.Fatalf("directory=%q, want LE prod URL", meta.Directory)
+	}
+
+	paths := store.CertPaths("example.com")
+	for _, p := range []string{paths.Cert, paths.Chain, paths.Fullchain, paths.Key, paths.Meta} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("missing %s: %v", p, err)
+		}
+	}
+}
+
+func TestImportDehydratedCAWithURL(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	notAfter := time.Now().Add(60 * 24 * time.Hour)
+	fc := makeCert(t, false, []string{"example.com"}, notAfter)
+	writeDehydratedDir(t, src, "example.com", fc,
+		`CA="https://acme.example.com/directory"`+"\n")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatalf("ImportDehydrated: %v", err)
+	}
+	if results[0].Status != StatusImported {
+		t.Fatalf("status=%q detail=%q", results[0].Status, results[0].Detail)
+	}
+	meta, err := store.LoadCertMeta("example.com")
+	if err != nil {
+		t.Fatalf("LoadCertMeta: %v", err)
+	}
+	if meta.Directory != "https://acme.example.com/directory" {
+		t.Fatalf("directory=%q, want full URL", meta.Directory)
+	}
+}
+
+func TestImportDehydratedNoConfig(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	notAfter := time.Now().Add(60 * 24 * time.Hour)
+	fc := makeCert(t, false, []string{"example.com"}, notAfter)
+	writeDehydratedDir(t, src, "example.com", fc, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatalf("ImportDehydrated: %v", err)
+	}
+	if results[0].Status != StatusImported {
+		t.Fatalf("status=%q detail=%q", results[0].Status, results[0].Detail)
+	}
+	meta, err := store.LoadCertMeta("example.com")
+	if err != nil {
+		t.Fatalf("LoadCertMeta: %v", err)
+	}
+	if meta.Directory != "" {
+		t.Fatalf("directory=%q, want empty when no config", meta.Directory)
+	}
+}
+
+func TestImportDehydratedSkipExisting(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	fc := makeCert(t, false, []string{"example.com"}, time.Now().Add(60*24*time.Hour))
+	writeDehydratedDir(t, src, "example.com", fc, "")
+
+	if _, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusSkipped {
+		t.Fatalf("status=%q, want skipped", results[0].Status)
+	}
+
+	results, err = ImportDehydrated(store, DehydratedOptions{Path: src, Force: true, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusImported {
+		t.Fatalf("force status=%q detail=%q", results[0].Status, results[0].Detail)
+	}
+}
+
+func TestImportDehydratedDryRun(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	fc := makeCert(t, false, []string{"example.com"}, time.Now().Add(60*24*time.Hour))
+	writeDehydratedDir(t, src, "example.com", fc, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, DryRun: true, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusPlanned {
+		t.Fatalf("status=%q, want planned", results[0].Status)
+	}
+	if _, err := os.Stat(store.CertPaths("example.com").Meta); !os.IsNotExist(err) {
+		t.Fatalf("dry run wrote meta")
+	}
+}
+
+func TestImportDehydratedKeyMismatch(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	cert := makeCert(t, false, []string{"example.com"}, time.Now().Add(60*24*time.Hour))
+	other := makeCert(t, false, []string{"example.com"}, time.Now().Add(60*24*time.Hour))
+	cert.keyPEM = other.keyPEM
+	writeDehydratedDir(t, src, "example.com", cert, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusFailed {
+		t.Fatalf("status=%q, want failed", results[0].Status)
+	}
+}
+
+func TestImportDehydratedExpired(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	expired := makeCert(t, false, []string{"example.com"}, time.Now().Add(-24*time.Hour))
+	writeDehydratedDir(t, src, "example.com", expired, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusImported {
+		t.Fatalf("expired cert: status=%q, want imported", results[0].Status)
+	}
+	if !contains(results[0].Detail, "EXPIRED") {
+		t.Fatalf("detail=%q, want EXPIRED tag", results[0].Detail)
+	}
+}
+
+func TestImportDehydratedOnlyFilter(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	a := makeCert(t, false, []string{"a.example"}, time.Now().Add(60*24*time.Hour))
+	b := makeCert(t, false, []string{"b.example"}, time.Now().Add(60*24*time.Hour))
+	writeDehydratedDir(t, src, "a.example", a, "")
+	writeDehydratedDir(t, src, "b.example", b, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Only: []string{"a.example"}, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Name != "a.example" {
+		t.Fatalf("results=%+v, want only a.example", results)
+	}
+}
+
+func TestImportDehydratedNameOverride(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	fc := makeCert(t, true, []string{"example.com"}, time.Now().Add(60*24*time.Hour))
+	writeDehydratedDir(t, src, "example.com", fc, "")
+
+	results, err := ImportDehydrated(store, DehydratedOptions{
+		Path: src,
+		Only: []string{"example.com"},
+		Name: "my-cert",
+		Now:  time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Source != "example.com" || results[0].Name != "my-cert" {
+		t.Fatalf("results=%+v, want source example.com target my-cert", results)
+	}
+	if _, err := store.LoadCertMeta("my-cert"); err != nil {
+		t.Fatalf("LoadCertMeta override target: %v", err)
+	}
+}
+
+func TestImportDehydratedNameOverrideRequiresSingle(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	a := makeCert(t, false, []string{"a.example"}, time.Now().Add(60*24*time.Hour))
+	b := makeCert(t, false, []string{"b.example"}, time.Now().Add(60*24*time.Hour))
+	writeDehydratedDir(t, src, "a.example", a, "")
+	writeDehydratedDir(t, src, "b.example", b, "")
+
+	if _, err := ImportDehydrated(store, DehydratedOptions{Path: src, Name: "my-cert", Now: time.Now()}); err == nil {
+		t.Fatal("ImportDehydrated with --name and multiple candidates succeeded, want error")
+	}
+}
+
+func TestImportDehydratedNoCertsDir(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	_, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err == nil {
+		t.Fatal("expected error when no certs/ directory exists")
+	}
+}
+
+func TestImportDehydratedNoChain(t *testing.T) {
+	src := t.TempDir()
+	stateDir := t.TempDir()
+	store := storage.New(stateDir)
+
+	notAfter := time.Now().Add(60 * 24 * time.Hour)
+	fc := makeCert(t, false, []string{"example.com"}, notAfter)
+
+	certDir := filepath.Join(src, "certs", "example.com")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "cert.pem"), fc.leafPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "privkey.pem"), fc.keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+	if err != nil {
+		t.Fatalf("ImportDehydrated: %v", err)
+	}
+	if results[0].Status != StatusImported {
+		t.Fatalf("status=%q detail=%q, want imported", results[0].Status, results[0].Detail)
+	}
+}
+
+func TestImportDehydratedCAShortName(t *testing.T) {
+	for short, full := range dehydratedCAs {
+		src := t.TempDir()
+		stateDir := t.TempDir()
+		store := storage.New(stateDir)
+
+		notAfter := time.Now().Add(60 * 24 * time.Hour)
+		fc := makeCert(t, false, []string{"example.com"}, notAfter)
+		writeDehydratedDir(t, src, "example.com", fc,
+			"CA=\""+short+"\"\n")
+
+		results, err := ImportDehydrated(store, DehydratedOptions{Path: src, Now: time.Now()})
+		if err != nil {
+			t.Fatalf("ImportDehydrated CA=%s: %v", short, err)
+		}
+		if results[0].Status != StatusImported {
+			t.Fatalf("CA=%s: status=%q detail=%q", short, results[0].Status, results[0].Detail)
+		}
+		meta, err := store.LoadCertMeta("example.com")
+		if err != nil {
+			t.Fatalf("CA=%s LoadCertMeta: %v", short, err)
+		}
+		if meta.Directory != full {
+			t.Errorf("CA=%s: directory=%q, want %q", short, meta.Directory, full)
+		}
+	}
+}

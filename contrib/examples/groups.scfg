@@ -1,0 +1,56 @@
+# Renewal and deploy groups.
+#
+# A `group` is a named bundle of certificate settings. Certificates that list
+# the group with `groups` inherit its settings, cutting the repetition when many
+# certificates share the same issuer, challenge, and on-disk deploy layout.
+#
+# Deploy target paths may use `{cert}` (the certificate's block name) and
+# `{name}` (its first subject name), so one shared deploy block writes
+# per-certificate files.
+#
+# A `reload` runs once per apply/renew run, after all deploys: identical reload
+# commands across certificates are coalesced, so a fleet of nginx-served
+# certificates reloads nginx a single time instead of once per certificate.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+group web {
+	account letsencrypt
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/{cert}/fullchain.pem
+		key /etc/nginx/tls/{cert}/privkey.pem
+		owner root
+		group www-data
+		mode 0640
+	}
+
+	reload "systemctl reload nginx"
+}
+
+# Inherits everything from the group.
+certificate example.com {
+	groups web
+	names example.com www.example.com
+}
+
+# Inherits the group, adds a second deploy of its own, and adds a second reload.
+# The shared nginx reload still fires once for the whole run; haproxy reloads
+# once too.
+certificate api.example.com {
+	groups web
+	names api.example.com
+
+	deploy haproxy {
+		fullchain /etc/haproxy/certs/{cert}.pem
+	}
+
+	reload "systemctl reload haproxy"
+}

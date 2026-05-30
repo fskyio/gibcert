@@ -1,0 +1,61 @@
+# Certificate dependencies.
+#
+# `requires` and `wants` order certificates within `gibcert apply` and
+# `gibcert renew`, modelled on systemd. Both run the named certificates first;
+# `requires` also gates -- if a required certificate fails or is skipped, the
+# dependent is skipped too. `wants` is ordering only.
+#
+# A common use is a bundle whose deploy hook concatenates several leaf
+# certificates: the bundle should not rebuild if a leaf failed to renew.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+certificate leaf-a.example.com {
+	account letsencrypt
+	names leaf-a.example.com
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy files {
+		fullchain /etc/tls/leaf-a/fullchain.pem
+		key /etc/tls/leaf-a/privkey.pem
+	}
+}
+
+certificate leaf-b.example.com {
+	account letsencrypt
+	names leaf-b.example.com
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy files {
+		fullchain /etc/tls/leaf-b/fullchain.pem
+		key /etc/tls/leaf-b/privkey.pem
+	}
+}
+
+# Runs after both leaves. If either leaf fails this run, the bundle is skipped
+# so its after-hook never rebuilds from a stale leaf.
+certificate bundle.example.com {
+	account letsencrypt
+	names bundle.example.com
+
+	requires leaf-a.example.com leaf-b.example.com
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy bundle {
+		fullchain /etc/tls/bundle/fullchain.pem
+		key /etc/tls/bundle/privkey.pem
+		after "cat /etc/tls/leaf-a/fullchain.pem /etc/tls/leaf-b/fullchain.pem > /etc/haproxy/bundle.pem && systemctl reload haproxy"
+	}
+}

@@ -1,0 +1,61 @@
+# DANE-TLS example with automatic TLSA rollover.
+#
+# gibcert maintains two private keys per TLSA-managed certificate:
+#   - privkey.pem      live key, used by the currently issued cert
+#   - privkey-next.pem staged key, with its TLSA fingerprint pre-published
+#
+# Each renewal promotes the staged key (after its TLSA has propagated for
+# more than the configured ttl), issues a new cert against it, and stages
+# a fresh next key. The retired key's TLSA is removed automatically.
+#
+# Requires a DNS provider whose driver supports persistent record edits:
+# exec, nsupdate / rfc2136, or powerdns / pdns. The manual driver is not
+# supported.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider powerdns {
+	type dns
+	driver powerdns
+	api-url https://ns.example.com
+	server-id localhost
+	ttl 60
+	propagation provider
+
+	secret api-key {
+		file /etc/gibcert/powerdns-api-key
+	}
+}
+
+certificate mail.example.com {
+	account letsencrypt
+	names mail.example.com
+
+	challenge dns-01 {
+		provider powerdns
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	tlsa {
+		provider powerdns
+		port 443
+		port 587
+		port 993
+		ttl 3600
+	}
+
+	deploy postfix {
+		fullchain /etc/postfix/tls/fullchain.pem
+		key /etc/postfix/tls/privkey.pem
+		owner root
+		group root
+		mode 0600
+		after "systemctl reload postfix"
+	}
+}

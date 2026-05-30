@@ -1,0 +1,56 @@
+# ACME dns-persist-01 (Let's Encrypt, draft).
+#
+# Publish a single standing TXT record at _validation-persist.<domain> that
+# authorizes this ACME account at this CA to issue for the domain. The CA
+# re-reads the record on every renewal; gibcert never writes DNS during
+# renewals.
+#
+# One-time setup:
+#
+#   gibcert apply               # register the account so it has a URI
+#   gibcert dns-persist install example.com
+#   gibcert dns-persist check example.com
+#
+# Or print-only and publish through your existing DNS tooling:
+#
+#   gibcert dns-persist install --print example.com
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+# Optional: only needed if you want `gibcert dns-persist install` to publish
+# the standing record for you. If you publish the record by hand, the provider
+# block can be omitted from the challenge.
+provider dynamic-dns {
+	type dns
+	driver rfc2136
+	server 192.0.2.53
+	zone example.com
+	secret tsig-key {
+		file /etc/gibcert/rfc2136.key
+	}
+}
+
+certificate example.com {
+	account letsencrypt
+	names example.com www.example.com
+
+	challenge dns-persist-01 {
+		provider dynamic-dns
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+		owner root
+		group www-data
+		mode 0640
+		after "systemctl reload nginx"
+	}
+}

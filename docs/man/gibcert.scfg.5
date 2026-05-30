@@ -1,0 +1,494 @@
+.TH GIBCERT.SCFG 5
+.SH NAME
+gibcert.scfg \- configuration file for gibcert
+.SH DESCRIPTION
+.B gibcert.scfg
+uses the scfg configuration format. Blocks use braces, directives are
+whitespace separated, and values with spaces can be quoted.
+.PP
+Top-level directives are include, ca, account, provider, challenge, and
+certificate.
+.SH INCLUDES
+.TP
+.B include \fIPATH\fR
+Load another file, a glob, or a directory. Relative paths are resolved from
+the including file. Directory includes load *.scfg files in sorted order.
+.SH CA
+.TP
+.B ca \fINAME\fR { ... }
+Define or override a CA profile.
+.PP
+Directives are:
+.TP
+.B type acme|local
+CA type. Default is acme.
+.TP
+.B directory \fIURL\fR
+ACME directory URL. Required for custom ACME CAs.
+.TP
+.B common-name \fINAME\fR
+Local CA certificate common name.
+.TP
+.B valid-for \fIDURATION\fR
+Local CA certificate validity. Default is 10 years.
+.TP
+.B key { ... }
+Local CA key settings.
+.TP
+.B persist-identifier \fINAME\fR
+CA identifier published in dns-persist-01 standing records. Built in for
+letsencrypt and letsencrypt-staging.
+.TP
+.B profile \fINAME\fR
+Default ACME certificate profile to request. Individual certificates may
+override it. Advertised profiles are listed by gibcert ca show.
+.PP
+Built-in ACME profiles are letsencrypt, letsencrypt-staging, zerossl,
+google, buypass, and sslcom.
+.PP
+CA, account, and certificate names are used as directory names under the state
+directory. They must be single path components: empty names, ., .., and names
+containing / or \e are rejected.
+.SH ACCOUNT
+.TP
+.B account \fINAME\fR { ... }
+Define an ACME account.
+.PP
+Directives are:
+.TP
+.B ca \fINAME\fR
+ACME CA profile. If omitted, the account name is used as the CA name.
+.TP
+.B email \fIADDRESS\fR
+Optional ACME account email contact.
+.TP
+.B eab { kid \fIKID\fR; hmac-key { file \fIPATH\fR } }
+Optional External Account Binding for new account registration. hmac-key
+must contain exactly one of file, value, env, command, or systemd-credential.
+.TP
+.B eab { kid \fIKID\fR; hmac-key { value \fIVALUE\fR } }
+Use an inline External Account Binding HMAC key value.
+.TP
+.B eab { kid \fIKID\fR; hmac-key { env \fINAME\fR } }
+Read the External Account Binding HMAC key from an environment variable.
+.TP
+.B eab { kid \fIKID\fR; hmac-key { command \fIARGV...\fR } }
+Run a command without a shell and use stdout as the External Account Binding
+HMAC key. Trailing newlines are removed.
+.TP
+.B eab { kid \fIKID\fR; hmac-key { systemd-credential \fINAME\fR } }
+Read the External Account Binding HMAC key from $CREDENTIALS_DIRECTORY/NAME.
+.SH PROVIDER
+.TP
+.B provider \fINAME\fR { ... }
+Define a DNS-01 challenge provider.
+.PP
+Directives are:
+.TP
+.B type dns
+Provider type. Required.
+.TP
+.B driver \fIDRIVER\fR
+DNS driver. Supported values are manual, exec, nsupdate, rfc2136, pdns, and
+powerdns.
+.TP
+.B propagation provider|tool
+Whether the provider handles DNS propagation waiting. Default is tool.
+.TP
+.B secret \fINAME\fR { file \fIPATH\fR }
+Define a secret passed as a file path or read by the driver.
+.TP
+.B secret \fINAME\fR { value \fIVALUE\fR }
+Define an inline secret value.
+.TP
+.B secret \fINAME\fR { env \fIVAR\fR }
+Read a secret value from an environment variable.
+.TP
+.B secret \fINAME\fR { command \fIARGV...\fR }
+Run a command without a shell and use stdout as the secret value. Trailing
+newlines are removed.
+.TP
+.B secret \fINAME\fR { systemd-credential \fINAME\fR }
+Read a secret from $CREDENTIALS_DIRECTORY/NAME, for services using systemd
+credentials.
+.PP
+Other provider directives are stored as driver-specific fields.
+.SH DNS PROVIDER FIELDS
+.SS manual
+The manual driver has no required fields.
+.SS exec
+The exec driver requires either:
+.TP
+.B command \fIPATH\fR
+Run the command as "PATH present" and "PATH cleanup".
+.PP
+or:
+.TP
+.B present \fICOMMAND\fR
+Shell command used to present the TXT record.
+.TP
+.B cleanup \fICOMMAND\fR
+Shell command used to clean up the TXT record.
+.PP
+The hook is invoked with one of the operations present, cleanup,
+add-record, or remove-record. present and cleanup carry the ACME
+challenge TXT record; add-record and remove-record carry persistent
+records (e.g. TLSA) that gibcert manages on the certificate's behalf.
+.PP
+The hook receives DNSREC_PROTOCOL, DNSREC_OPERATION,
+DNSREC_RECORD_TYPE, DNSREC_RECORD_OWNER, DNSREC_RECORD_RDATA, plus
+DNSREC_DOMAIN, DNSREC_IDENTIFIER, and DNSREC_TIMEOUT for challenge
+operations, DNSREC_RECORD_TTL for add-record, and DNSREC_FIELD_*,
+DNSREC_SECRET_*_FILE, and DNSREC_SECRET_* for provider configuration.
+Record rdata is always canonical presentation format; there are no
+per-type variables. The current DNS record provider protocol version is 1.
+.SS rfc2136 and nsupdate
+Fields are:
+.TP
+.B command \fIPATH\fR
+nsupdate executable. Default is nsupdate.
+.TP
+.B server \fIADDRESS\fR
+Optional server line in the nsupdate script.
+.TP
+.B zone \fINAME\fR
+Optional zone line in the nsupdate script.
+.PP
+The first secret with a file value is passed to nsupdate with -k.
+.SS powerdns and pdns
+Fields are:
+.TP
+.B api-url \fIURL\fR
+Base PowerDNS API URL. Required.
+.TP
+.B server-id \fIID\fR
+PowerDNS server id. Default is localhost.
+.TP
+.B ttl \fISECONDS\fR
+TXT record TTL. Default is 60.
+.PP
+The api-key secret is required. The zone is detected automatically by listing
+zones on the server and choosing the longest suffix match for the challenge
+FQDN.
+.SH TOP-LEVEL CHALLENGE
+.TP
+.B challenge http-01 { webroot \fIPATH\fR }
+Set a global HTTP-01 challenge default using an external web server's webroot.
+.TP
+.B challenge http-01 { listen \fIADDR\fR }
+Set a global HTTP-01 challenge default using gibcert's built-in standalone
+HTTP server. Mutually exclusive with webroot.
+.SH GROUP
+.TP
+.B group \fINAME\fR { ... }
+Define a named bundle of certificate settings that certificates inherit via
+.B groups.
+A group may set
+.BR account ,
+.BR ca ,
+.BR profile ,
+.BR preferred-chain ,
+.BR valid-for ,
+.BR key ,
+.BR challenge ,
+.BR renew ,
+.BR deploy ,
+and
+.BR reload .
+It cannot set
+.B names
+and cannot reference other groups.
+.PP
+When a certificate lists groups, scalar settings set on the certificate replace
+the group's, while unset ones are inherited; it is an error for two listed
+groups to set the same scalar. Deploy blocks are merged by name: a certificate
+deploy overrides only the fields it sets on an inherited deploy of the same name,
+and a new name is added alongside the inherited ones.
+.PP
+Deploy target paths
+.RB ( cert ,
+.BR chain ,
+.BR fullchain ,
+.BR key ,
+.BR cert-der ,
+.BR key-der )
+may contain the placeholders
+.B {cert}
+(the certificate's block name) and
+.B {name}
+(its first subject name), which expand per certificate. Templating applies to
+all certificates, not only grouped ones; hook commands and ownership fields are
+never templated. An unknown placeholder is an error.
+.SH CERTIFICATE
+.TP
+.B certificate \fINAME\fR { ... }
+Define one managed certificate.
+.PP
+Directives are:
+.TP
+.B account \fINAME\fR
+ACME account to use. Mutually exclusive with ca.
+.TP
+.B ca \fINAME\fR
+CA profile to use. For ACME CAs, gibcert uses an implicit account named
+ca:<ca-name>. For local CAs, gibcert signs locally. Mutually exclusive with
+account.
+.TP
+.B groups \fINAME\fR...
+Inherit settings from one or more
+.B group
+blocks. See
+.B GROUP.
+.TP
+.B requires \fINAME\fR...
+Other certificates that must run before this one; this certificate is skipped if
+any of them fails. See
+.B DEPENDENCIES.
+.TP
+.B wants \fINAME\fR...
+Other certificates that should run before this one, without gating. See
+.B DEPENDENCIES.
+.TP
+.B names \fINAME\fR...
+Subject names. Required. A name that parses as an IP address is requested as
+an IP identifier (RFC 8738); IP identifiers require the http-01 or
+tls-alpn-01 challenge.
+.TP
+.B valid-for \fIDURATION\fR
+Local CA certificate validity. Default is 90 days. Only valid with a local CA.
+.TP
+.B preferred-chain \fINAME\fR
+Prefer an ACME certificate chain whose final certificate subject or issuer
+matches \fINAME\fR, for example ISRG Root X1. If the default chain does not
+match, gibcert fetches alternate chains offered by the ACME server. Issuance
+fails if no offered chain matches. Only valid with ACME certificates.
+.TP
+.B profile \fINAME\fR
+ACME certificate profile to request for this certificate. Overrides the
+profile set on the CA. Only valid with ACME certificates.
+.TP
+.B key { ... }
+Certificate key settings.
+.TP
+.B challenge \fITYPE\fR { ... }
+ACME challenge settings. Supported types are http-01, dns-01, tls-alpn-01,
+and dns-persist-01.
+.TP
+.B renew { before-expiry \fIDURATION\fR }
+Renewal window. If unset, gibcert uses one third of the current certificate
+lifetime, capped at 30 days.
+.TP
+.B deploy \fINAME\fR { ... }
+Deployment target. Optional; a certificate with no deploy blocks is still
+issued and stored under the state directory, but no files are written
+elsewhere.
+.TP
+.B reload \fICOMMAND\fR
+Command run once per apply/renew run when any deploy on this certificate
+changed. Identical commands across certificates are coalesced into a single
+invocation. Repeatable. See
+.B RELOAD HOOKS
+in
+.BR gibcert (1)
+hook documentation.
+.TP
+.B tlsa { ... }
+Manage DANE TLSA records for the certificate. Optional.
+.TP
+.B failover { ... }
+Alternate ACME issuers tried when the primary issuer cannot issue. Optional.
+Only valid for ACME certificates. See
+.B FAILOVER.
+.SH FAILOVER
+.B failover { ... }
+lists alternate issuers tried, in order, when the certificate's primary issuer
+(its
+.B account
+or
+.B ca)
+cannot issue \(em for example during a CA outage, a rate-limit, or when the
+requested profile is unavailable. Each child line is one issuer:
+.TP
+.B account \fINAME\fR
+Use an explicit ACME account.
+.TP
+.B ca \fINAME\fR
+Use the CA's implicit "ca:<name>" account.
+.PP
+The two forms may be mixed. The primary issuer is always attempted first; a
+failover is only reached when every preceding issuer fails, so a healthy primary
+is never skipped and gibcert returns to it on the next run. Failover triggers on
+any issuance failure. If every issuer fails, issuance fails and the error
+reports each issuer's failure. Each entry must reference an ACME account or ACME
+CA and must differ from the primary and from the other entries.
+.SH DEPENDENCIES
+.B requires
+and
+.B wants
+order certificates relative to one another, modelled on systemd's
+.B Requires=
+and
+.B Wants=.
+Both make the named certificates run before this one.
+.B requires
+also gates: if a required certificate fails or is itself skipped during the run,
+this certificate is skipped \(em not issued and not deployed.
+.B wants
+is advisory ordering only.
+.PP
+Dependencies apply to
+.B gibcert apply
+and
+.B gibcert renew,
+which process certificates in dependency order; they are not pulled into
+single-certificate commands such as
+.B gibcert issue.
+In
+.B renew,
+a required certificate that is already valid (and so not renewed this run)
+counts as satisfied; gating only triggers when a required certificate is
+processed and fails. Each name must reference another certificate; a certificate
+cannot depend on itself, repeat a name, or list a name in both
+.B requires
+and
+.B wants,
+and the graph must be acyclic.
+.SH KEY
+.TP
+.B type ecdsa|rsa
+Key type. Default is ecdsa.
+.TP
+.B curve p256|p384
+ECDSA curve. Default is p256.
+.TP
+.B bits 2048|3072|4096
+RSA key size.
+.TP
+.B reuse
+Reuse an existing certificate key on renewal. Only valid for certificate
+keys.
+.SH CERTIFICATE CHALLENGE
+.TP
+.B challenge http-01 { webroot \fIPATH\fR }
+Use HTTP-01 with the given webroot. The webroot may come from the global
+challenge block.
+.TP
+.B challenge http-01 { listen \fIADDR\fR }
+Use HTTP-01 with gibcert's built-in standalone HTTP server on the given
+bind address. Mutually exclusive with webroot. Binding privileged ports
+requires root or CAP_NET_BIND_SERVICE.
+.TP
+.B challenge tls-alpn-01 { listen \fIADDR\fR }
+Use TLS-ALPN-01 with gibcert's built-in standalone TLS listener on the given
+bind address. Required for tls-alpn-01.
+.TP
+.B challenge dns-01 { provider \fINAME\fR [propagation-timeout \fIDURATION\fR] [alias-fqdn \fIFQDN\fR | alias-domain \fIDOMAIN\fR] }
+Use DNS-01 with the named provider. The default propagation timeout is 120s.
+With alias-fqdn, gibcert publishes the TXT record at the given exact FQDN.
+With alias-domain, gibcert publishes at _acme-challenge.<domain>.<alias-domain>.
+.TP
+.B challenge dns-persist-01 { [provider \fINAME\fR] [alias-fqdn \fIFQDN\fR | alias-domain \fIDOMAIN\fR] }
+Use the dns-persist-01 standing-record challenge. The provider is only used by
+gibcert dns-persist install; renewals never write DNS. Wildcard names require a
+standing record with policy=wildcard.
+.SH DEPLOY
+.TP
+.B deploy \fINAME\fR { ... }
+Copy stored certificate material to service paths.
+.PP
+Directives are:
+.TP
+.B cert \fIPATH\fR
+Leaf certificate destination.
+.TP
+.B chain \fIPATH\fR
+Issuer chain destination.
+.TP
+.B fullchain \fIPATH\fR
+Leaf plus issuer chain destination.
+.TP
+.B key \fIPATH\fR
+Private key destination.
+.TP
+.B cert-der \fIPATH\fR
+Leaf certificate destination in binary DER, for trust stores that expect DER.
+.TP
+.B key-der \fIPATH\fR
+Private key destination in binary DER (the on-disk PKCS#8 encoding, unarmored).
+.TP
+.B owner \fINAME\fR
+Owner for deployed files.
+.TP
+.B group \fINAME\fR
+Group for deployed files.
+.TP
+.B mode \fIMODE\fR
+File mode for deployed files. Must be 0777 or lower.
+.TP
+.B before \fICOMMAND\fR
+Command to run through the platform shell before changed material is deployed.
+.TP
+.B after \fICOMMAND\fR
+Command to run through the platform shell after changed material is deployed.
+.PP
+At least one of cert, chain, fullchain, key, cert-der, or key-der must be set.
+All deploy paths must be absolute.
+.SH TLSA
+.TP
+.B tlsa { ... }
+Manage DANE TLSA records for the certificate. Directives are:
+.TP
+.B provider \fINAME\fR
+DNS provider used to publish and remove TLSA records. Required. Must use a
+driver that supports persistent record edits: exec, nsupdate, rfc2136, pdns,
+or powerdns.
+.TP
+.B port \fIPORT\fR[/\fIPROTO\fR]
+Repeatable. Port and transport for which TLSA records are published.
+Protocol defaults to tcp; tcp, udp, and sctp are accepted.
+.TP
+.B ttl \fISECONDS\fR
+TLSA record TTL. Default is 3600. Must be less than the certificate renewal
+window.
+.TP
+.B type \fIUSAGE\fR \fISELECTOR\fR \fIMTYPE\fR
+Certificate usage, selector, and matching type. Default is 3 1 1 (DANE-EE,
+SPKI, SHA-256). Only DANE-EE with SPKI selector is supported. Matching type
+must be 1 (SHA-256) or 2 (SHA-512).
+.PP
+For TLSA-managed certificates gibcert keeps two private keys at all times:
+privkey.pem (live) and privkey-next.pem (staged). The staged key's TLSA
+fingerprint is pre-published in DNS. When the next renewal is due and the
+staged TLSA has propagated for more than ttl, gibcert issues against the
+staged key, promotes it, generates a new staged next-key, and publishes its
+TLSA. The retired key's TLSA is removed.
+.SH DURATIONS
+Expiry-related fields accept Go duration syntax or an integer day suffix such
+as 30d. Other duration fields use Go duration syntax such as 120s or 5m.
+.SH EXAMPLE
+.nf
+account letsencrypt {
+  ca letsencrypt
+  email admin@example.com
+}
+
+challenge http-01 {
+  webroot /var/www/acme-challenge
+}
+
+certificate example.com {
+  account letsencrypt
+  names example.com www.example.com
+
+  deploy nginx {
+    fullchain /etc/nginx/tls/example.com/fullchain.pem
+    key /etc/nginx/tls/example.com/privkey.pem
+    owner root
+    group www-data
+    mode 0640
+    after "systemctl reload nginx"
+  }
+}
+.fi
+.SH SEE ALSO
+.BR gibcert (1)

@@ -1,0 +1,42 @@
+# ACME DNS-01 example using RFC2136/nsupdate.
+#
+# Store the TSIG key in /etc/gibcert/rfc2136.key with mode 0600.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider dynamic-dns {
+	type dns
+	driver rfc2136
+	server 192.0.2.53
+	zone example.com
+
+	secret tsig-key {
+		file /etc/gibcert/rfc2136.key
+	}
+}
+
+certificate wildcard-example.com {
+	account letsencrypt
+	names example.com *.example.com
+
+	challenge dns-01 {
+		provider dynamic-dns
+		propagation-timeout 120s
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy haproxy {
+		fullchain /etc/haproxy/tls/example.com/fullchain.pem
+		key /etc/haproxy/tls/example.com/privkey.pem
+		owner root
+		group haproxy
+		mode 0640
+		after "systemctl reload haproxy"
+	}
+}

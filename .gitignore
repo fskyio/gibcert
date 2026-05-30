@@ -1,0 +1,5 @@
+/gibcert
+/.state/
+/dist/
+/coverage.out
+*.test

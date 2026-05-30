@@ -1,0 +1,38 @@
+# ACME HTTP-01 using gibcert's built-in standalone HTTP server.
+#
+# gibcert binds the listen address only while a challenge is in flight and
+# closes it once the order is finalized. Binding :80 typically requires root
+# or CAP_NET_BIND_SERVICE.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+certificate example.com {
+	account letsencrypt
+	names example.com www.example.com
+
+	challenge http-01 {
+		listen ":80"
+	}
+
+	key {
+		type ecdsa
+		curve p256
+		reuse
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+		owner root
+		group www-data
+		mode 0640
+		after "systemctl reload nginx"
+	}
+}

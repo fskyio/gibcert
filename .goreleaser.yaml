@@ -1,0 +1,126 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+    - sh -c 'mkdir -p contrib/completions && go run ./cmd/gibcert completion bash > contrib/completions/gibcert.bash && go run ./cmd/gibcert completion zsh > contrib/completions/_gibcert && go run ./cmd/gibcert completion fish > contrib/completions/gibcert.fish'
+
+builds:
+  - id: gibcert
+    binary: gibcert
+    main: ./cmd/gibcert
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Version={{ .Version }}
+      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Commit={{ .Commit }}
+      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Date={{ .Date }}
+      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.BuiltBy=goreleaser
+    goos:
+      - linux
+      - darwin
+      - freebsd
+      - openbsd
+      - netbsd
+      - dragonfly
+      - illumos
+      - solaris
+      - windows
+      - plan9
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: dragonfly
+        goarch: arm64
+      - goos: illumos
+        goarch: arm64
+      - goos: solaris
+        goarch: arm64
+      - goos: plan9
+        goarch: arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}{{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - etc/gibcert.scfg
+      - contrib/examples/*
+      - contrib/systemd/gibcert.service
+      - contrib/systemd/gibcert.timer
+      - contrib/completions/*
+
+nfpms:
+  - id: gibcert-deb
+    package_name: gibcert
+    vendor: FSKY
+    homepage: https://foundry.fsky.io/fsky/gibcert
+    maintainer: FSKY <development@fsky.io>
+    description: |-
+      ACME and local certificate manager.
+      gibcert manages certificate issuance, renewal, storage, and deployment from
+      a declarative configuration file. It supports ACME HTTP-01 and DNS-01
+      challenges, local CA profiles, deploy hooks, and systemd timer based
+      unattended renewal.
+    license: Apache-2.0
+    section: admin
+    priority: optional
+    formats:
+      - deb
+    recommends:
+      - ca-certificates
+    suggests:
+      - bind9-dnsutils
+    contents:
+      - src: etc/gibcert.scfg
+        dst: /etc/gibcert/gibcert.scfg
+        type: config|noreplace
+      - src: contrib/examples/http-01.scfg
+        dst: /usr/share/doc/gibcert/examples/http-01.scfg
+      - src: contrib/examples/dns-rfc2136.scfg
+        dst: /usr/share/doc/gibcert/examples/dns-rfc2136.scfg
+      - src: contrib/examples/dns-powerdns.scfg
+        dst: /usr/share/doc/gibcert/examples/dns-powerdns.scfg
+      - src: contrib/examples/dns-exec.scfg
+        dst: /usr/share/doc/gibcert/examples/dns-exec.scfg
+      - src: contrib/examples/local-ca.scfg
+        dst: /usr/share/doc/gibcert/examples/local-ca.scfg
+      - src: contrib/systemd/gibcert.service
+        dst: /lib/systemd/system/gibcert.service
+      - src: contrib/systemd/gibcert.timer
+        dst: /lib/systemd/system/gibcert.timer
+      - src: contrib/completions/gibcert.bash
+        dst: /usr/share/bash-completion/completions/gibcert
+      - src: contrib/completions/_gibcert
+        dst: /usr/share/zsh/vendor-completions/_gibcert
+      - src: contrib/completions/gibcert.fish
+        dst: /usr/share/fish/vendor_completions.d/gibcert.fish
+      - dst: /etc/gibcert/conf.d
+        type: dir
+      - dst: /var/lib/gibcert
+        type: dir
+      - dst: /var/cache/gibcert
+        type: dir
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+
+checksum:
+  name_template: checksums.txt
+
+gitea_urls:
+  api: https://foundry.fsky.io/api/v1
+  download: https://foundry.fsky.io
+
+release:
+  gitea:
+    owner: fsky
+    name: gibcert
+  name_template: "gibcert v{{ .Version }}"
+  disable: false
+  mode: append

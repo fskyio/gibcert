@@ -1,0 +1,39 @@
+# ACME TLS-ALPN-01 using gibcert's built-in standalone TLS listener.
+#
+# gibcert binds the listen address only while a challenge is in flight and
+# closes it once the order is finalized. The CA connects with SNI set to the
+# certificate name and ALPN "acme-tls/1". Binding :443 typically requires root
+# or CAP_NET_BIND_SERVICE.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+certificate example.com {
+	account letsencrypt
+	names example.com www.example.com
+
+	challenge tls-alpn-01 {
+		listen ":443"
+	}
+
+	key {
+		type ecdsa
+		curve p256
+		reuse
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy haproxy {
+		fullchain /etc/haproxy/tls/example.com.pem
+		key /etc/haproxy/tls/example.com.key
+		owner root
+		group haproxy
+		mode 0640
+		after "systemctl reload haproxy"
+	}
+}

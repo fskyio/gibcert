@@ -1,0 +1,32 @@
+[Unit]
+Description=Renew and deploy gibcert certificates
+Documentation=https://foundry.fsky.io/fsky/gibcert
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/gibcert --config /etc/gibcert/gibcert.scfg --state-dir /var/lib/gibcert --log-format text renew --verbose
+StateDirectory=gibcert
+CacheDirectory=gibcert
+RuntimeDirectory=gibcert
+ConfigurationDirectory=gibcert
+UMask=0077
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

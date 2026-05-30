@@ -1,0 +1,37 @@
+# ACME HTTP-01 example.
+#
+# The web server for example.com must serve files from this directory at:
+#   http://example.com/.well-known/acme-challenge/
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+challenge http-01 {
+	webroot /var/www/acme-challenge
+}
+
+certificate example.com {
+	account letsencrypt
+	names example.com www.example.com
+
+	key {
+		type ecdsa
+		curve p256
+		reuse
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy nginx {
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+		owner root
+		group www-data
+		mode 0640
+		after "systemctl reload nginx"
+	}
+}

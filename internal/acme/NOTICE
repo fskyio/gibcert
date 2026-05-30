@@ -1,0 +1,18 @@
+This package is a vendored copy of the low-level ACME protocol client from
+github.com/mholt/acmez/v3 (the v3/acme subpackage), plus the TLSALPN01ChallengeCert
+helper from the top-level package, as of acmez v3.1.6.
+
+Original work Copyright 2020 Matthew Holt, licensed under the Apache License,
+Version 2.0 (see LICENSE in this directory).
+
+It was vendored into gibcert so the ACME order flow can be extended with fields
+and lifecycle behavior the upstream package does not expose (e.g. STAR / RFC 8739
+auto-renewal, and future newOrder extensions), which is not possible from an
+external package because request signing is unexported. The high-level porcelain
+(Solver / ObtainCertificate / CSR helpers) was intentionally not vendored; gibcert
+drives the protocol directly from internal/acmeclient.
+
+Local modifications:
+  - tlsalpn01.go moved into package acme and the golang.org/x/net/idna dependency
+    dropped (identifier values are used verbatim, consistent with the rest of
+    gibcert's issuance path).

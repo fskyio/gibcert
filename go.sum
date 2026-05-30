@@ -1,0 +1,4 @@
+codeberg.org/emersion/go-scfg v0.1.0 h1:6dnGU0ZI4gX+O5rMjwhoaySItzHG710eXL5TIQKl+uM=
+codeberg.org/emersion/go-scfg v0.1.0/go.mod h1:0nooW1ufBB4SlJEdTtiVN9Or+bnNM1icOkQ6Tbrq6O0=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

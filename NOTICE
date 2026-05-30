@@ -1,0 +1,11 @@
+gibcert
+Copyright 2026 FSKY <development@fsky.io>
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by Matthew Holt:
+the ACME protocol client vendored in internal/acme/ is derived from
+github.com/mholt/acmez (https://github.com/mholt/acmez), Copyright 2020
+Matthew Holt, licensed under the Apache License, Version 2.0. See
+internal/acme/LICENSE and internal/acme/NOTICE for details and a list of
+local modifications.

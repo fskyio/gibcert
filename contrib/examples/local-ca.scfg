@@ -1,0 +1,42 @@
+# Local CA example for private/internal certificates.
+#
+# The local CA key and certificate are stored under /var/lib/gibcert.
+# Export the CA certificate with:
+#   gibcert ca export internal
+
+ca internal {
+	type local
+	common-name "example internal CA"
+	valid-for 3650d
+
+	key {
+		type ecdsa
+		curve p256
+	}
+}
+
+certificate internal-service {
+	ca internal
+	names service.internal.example service
+	valid-for 90d
+
+	key {
+		type ecdsa
+		curve p256
+		reuse
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy service {
+		cert /etc/service/tls/cert.pem
+		fullchain /etc/service/tls/fullchain.pem
+		key /etc/service/tls/key.pem
+		owner root
+		group service
+		mode 0640
+		after "systemctl reload service"
+	}
+}
