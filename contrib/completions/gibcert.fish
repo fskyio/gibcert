@@ -1,7 +1,7 @@
 # fish completion for gibcert
 
 function __gibcert_no_subcommand
-    set -l commands help version check plan apply issue renew account ca dns-persist deploy revoke delete rename list show import completion
+    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion
     not __fish_seen_subcommand_from $commands
 end
 
@@ -33,6 +33,7 @@ complete -c gibcert -n __gibcert_no_subcommand -a renew -d 'renew due certificat
 complete -c gibcert -n __gibcert_no_subcommand -a account -d 'manage ACME accounts'
 complete -c gibcert -n __gibcert_no_subcommand -a ca -d 'list, show, or export CA profiles'
 complete -c gibcert -n __gibcert_no_subcommand -a dns-persist -d 'manage dns-persist-01 standing records'
+complete -c gibcert -n __gibcert_no_subcommand -a tlsa -d 'manage DANE TLSA records'
 complete -c gibcert -n __gibcert_no_subcommand -a deploy -d 'deploy stored certificate material'
 complete -c gibcert -n __gibcert_no_subcommand -a revoke -d 'revoke a stored certificate at the CA'
 complete -c gibcert -n __gibcert_no_subcommand -a delete -d 'remove local certificate state'
@@ -69,6 +70,10 @@ complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and not __fish_
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and not __fish_seen_subcommand_from install check' -a check -d 'check standing DNS record'
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen_subcommand_from install' -l print -d 'print the record without writing it'
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen_subcommand_from install check' -a '(__gibcert_certs)'
+
+# tlsa subcommands and cert arg
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and not __fish_seen_subcommand_from reconcile' -a reconcile -d 'reconcile stored certificate TLSA records'
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -a '(__gibcert_certs)'
 
 # commands that take a cert name
 complete -c gibcert -n '__fish_seen_subcommand_from deploy show' -a '(__gibcert_certs)'

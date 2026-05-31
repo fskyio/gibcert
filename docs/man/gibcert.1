@@ -88,6 +88,12 @@ Look up the standing TXT record for each name in the certificate and verify
 it authorizes the configured account at the configured CA. Wildcard names
 require policy=wildcard.
 .TP
+.B tlsa reconcile \fICERTIFICATE\fR
+Reconcile DANE TLSA records for one configured certificate using stored
+canonical certificate material. This does not issue, renew, or deploy the
+certificate; it republishes current and staged next-key TLSA records, removes
+stale records known from metadata, and refreshes TLSA metadata.
+.TP
 .B deploy \fICERTIFICATE\fR
 Deploy stored canonical material for one configured certificate.
 .TP

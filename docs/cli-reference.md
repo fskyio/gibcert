@@ -108,6 +108,12 @@ The certificate's ACME account must already exist locally (run `gibcert apply` o
 
 Look up the `_validation-persist.<domain>` TXT record for each name in the certificate and verify it authorizes the configured account at the configured CA. Wildcard names require a matching `policy=wildcard` record. Exit status `1` if any record is missing or does not match.
 
+### `gibcert tlsa reconcile <certificate>`
+
+Reconcile DANE TLSA records for one configured certificate using stored canonical certificate material.
+
+This command does not issue, renew, or deploy the certificate. It reads the stored `cert.pem` and `privkey.pem`, ensures the current and staged next-key TLSA records are published, removes stale records known from gibcert metadata, and writes refreshed TLSA metadata. It is useful after a DNS provider or network failure interrupted TLSA publishing after certificate material had already been stored.
+
 ### `gibcert deploy <certificate>`
 
 Deploy stored canonical certificate material for one configured certificate to its configured deploy targets.

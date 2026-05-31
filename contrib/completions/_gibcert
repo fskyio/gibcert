@@ -94,6 +94,18 @@ _gibcert() {
                 ;;
             esac
             ;;
+        tlsa)
+            _arguments '1: :_gibcert_tlsa_subcmds' '*:: :->tlsaargs'
+            case $state in
+            tlsaargs)
+                case $words[1] in
+                reconcile)
+                    _arguments '1: :_gibcert_certs'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
         import)
             _arguments '1: :_gibcert_import_sources' '*:: :->importargs'
             case $state in
@@ -169,6 +181,7 @@ _gibcert_commands() {
         'account:manage ACME accounts'
         'ca:list, show, or export CA profiles'
         'dns-persist:manage dns-persist-01 standing records'
+        'tlsa:manage DANE TLSA records'
         'deploy:deploy stored certificate material to configured targets'
         'revoke:revoke a stored certificate at the CA'
         'delete:remove local certificate state, optionally undeploying'
@@ -214,6 +227,12 @@ _gibcert_account_subcmds() {
 _gibcert_dns_persist_subcmds() {
     local -a subcmds
     subcmds=('install:install standing DNS record' 'check:check standing DNS record')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_tlsa_subcmds() {
+    local -a subcmds
+    subcmds=('reconcile:reconcile stored certificate TLSA records')
     _describe 'subcommand' subcmds
 }
 

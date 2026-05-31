@@ -754,6 +754,8 @@ On every issuance, gibcert ensures both keys' TLSA records are published at ever
 
 On the very first issuance for a TLSA-managed certificate, both records are published before the certificate is written to canonical storage, so DANE clients see the pin once the certificate is deployed.
 
+If a DNS provider or network failure interrupts TLSA publishing after certificate material has been stored, run `gibcert tlsa reconcile <certificate>` to retry TLSA publication from the stored cert and key without creating a new ACME order.
+
 `gibcert issue --new-key` and `gibcert revoke --reissue` bypass the pre-publish wait and generate a fresh key inline. DANE clients with cached records may fail until the old TLSA TTL expires.
 
 ### Supported DNS drivers

@@ -58,6 +58,7 @@ commands:
   account <command>     manage ACME accounts
   ca <command>          list, show, or export CA profiles
   dns-persist <command> manage dns-persist-01 standing records
+  tlsa <command>        manage DANE TLSA records
   deploy <certificate>  deploy stored certificate material to configured targets
   revoke [flags] <cert> revoke a stored certificate at the CA
   delete [flags] <cert> remove local certificate state, optionally undeploying
@@ -177,6 +178,8 @@ func run() int {
 		return cmdCA(p, args[1:])
 	case "dns-persist":
 		return cmdDNSPersist(p, args[1:])
+	case "tlsa":
+		return cmdTLSA(p, args[1:])
 	case "deploy":
 		return cmdDeploy(p, args[1:])
 	case "revoke":
@@ -231,6 +234,8 @@ func cmdHelp(args []string) int {
 	case "dns-persist":
 		fmt.Println("usage: gibcert dns-persist install [--print] <certificate>")
 		fmt.Println("       gibcert dns-persist check <certificate>")
+	case "tlsa":
+		fmt.Println("usage: gibcert tlsa reconcile <certificate>")
 	case "deploy":
 		fmt.Println("usage: gibcert deploy <certificate>")
 	case "revoke":
@@ -719,6 +724,94 @@ func cmdDNSPersistCheck(cfg *config.Config, store *storage.Store, args []string)
 		return 1
 	}
 	return 0
+}
+
+func cmdTLSA(p *paths.Paths, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+		return 2
+	}
+	cfg, err := loadCfg(p)
+	if err != nil {
+		logError(err)
+		return 1
+	}
+	store := storage.New(p.State)
+	if err := store.Init(); err != nil {
+		logError(err)
+		return 1
+	}
+	switch args[0] {
+	case "reconcile":
+		return cmdTLSAReconcile(cfg, store, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "gibcert tlsa: unknown command %q\n", args[0])
+		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+		return 2
+	}
+}
+
+func cmdTLSAReconcile(cfg *config.Config, store *storage.Store, args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+		return 2
+	}
+	name := args[0]
+	if err := validateCertificateArg(name); err != nil {
+		logError(err)
+		return 2
+	}
+	cert, err := findCert(cfg, name)
+	if err != nil {
+		logError(err)
+		return 1
+	}
+	meta, err := tlsaMetaDefaults(cfg, cert)
+	if err != nil {
+		logError(err)
+		return 1
+	}
+	lk, err := lock.Acquire(store.LockPath(), 5*time.Second)
+	if err != nil {
+		logError(err)
+		return 1
+	}
+	defer lk.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := acmeclient.ReconcileTLSA(ctx, store, cfg, cert, acmeclient.TLSAReconcileOptions{
+		Out:  os.Stdout,
+		Meta: meta,
+	}); err != nil {
+		logError(err)
+		return 1
+	}
+	return 0
+}
+
+func tlsaMetaDefaults(cfg *config.Config, cert *config.Certificate) (storage.CertMeta, error) {
+	meta := storage.CertMeta{
+		Name:  cert.Name,
+		Names: append([]string(nil), cert.Names...),
+	}
+	if ca, ok, err := localCAForCert(cfg, cert); err != nil {
+		return meta, err
+	} else if ok {
+		meta.CA = ca.Name
+		meta.IssuerType = "local"
+		meta.Directory = localca.Directory(ca.Name)
+		return meta, nil
+	}
+	account, err := acmeAccountForCert(cfg, cert)
+	if err != nil {
+		return meta, err
+	}
+	meta.Account = account.Name
+	meta.CA = account.CA
+	meta.IssuerType = "acme"
+	meta.Directory = account.Directory
+	return meta, nil
 }
 
 func findProvider(cfg *config.Config, name string) *config.Provider {

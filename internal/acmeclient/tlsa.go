@@ -18,6 +18,8 @@ package acmeclient
 import (
 	"context"
 	"crypto"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +41,86 @@ type TLSAKeyDecision struct {
 	NextNotYet  bool
 	NextMissing bool
 	Bootstrap   bool
+}
+
+type TLSAReconcileOptions struct {
+	Out  io.Writer
+	Meta storage.CertMeta
+}
+
+// ReconcileTLSA republishes TLSA records for already stored canonical
+// certificate material without placing a new ACME order.
+func ReconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config, cert *config.Certificate, opts TLSAReconcileOptions) error {
+	if cert.TLSA == nil {
+		return fmt.Errorf("certificate %q has no tlsa block", cert.Name)
+	}
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+	paths := store.CertPaths(cert.Name)
+	certKey, err := storage.ReadKey(paths.Key)
+	if err != nil {
+		return fmt.Errorf("read canonical privkey: %w", err)
+	}
+	leaf, err := readStoredLeaf(paths.Cert)
+	if err != nil {
+		return fmt.Errorf("read canonical cert: %w", err)
+	}
+
+	meta := opts.Meta
+	if existing, err := store.LoadCertMeta(cert.Name); err == nil {
+		meta = *existing
+		fillTLSAMetaDefaults(&meta, opts.Meta)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load cert metadata: %w", err)
+	}
+	meta.Name = cert.Name
+	meta.Names = append([]string(nil), cert.Names...)
+	meta.SerialNumber = leaf.SerialNumber.String()
+	meta.NotBefore = leaf.NotBefore
+	meta.NotAfter = leaf.NotAfter
+	if meta.IssuedAt.IsZero() {
+		meta.IssuedAt = time.Now().UTC()
+	}
+
+	tlsaMeta, err := reconcileTLSA(ctx, store, cfg, cert, certKey, out)
+	if err != nil {
+		return err
+	}
+	meta.TLSA = tlsaMeta
+	if err := store.SaveCertMeta(cert.Name, meta); err != nil {
+		return fmt.Errorf("write cert metadata: %w", err)
+	}
+	fmt.Fprintf(out, "tlsa reconciled: %s\n", cert.Name)
+	return nil
+}
+
+func fillTLSAMetaDefaults(meta *storage.CertMeta, defaults storage.CertMeta) {
+	if meta.Account == "" {
+		meta.Account = defaults.Account
+	}
+	if meta.CA == "" {
+		meta.CA = defaults.CA
+	}
+	if meta.IssuerType == "" {
+		meta.IssuerType = defaults.IssuerType
+	}
+	if meta.Directory == "" {
+		meta.Directory = defaults.Directory
+	}
+}
+
+func readStoredLeaf(path string) (*x509.Certificate, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM certificate in %s", path)
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 // pickTLSAKey selects the cert key to use for a TLSA-managed cert. It prefers

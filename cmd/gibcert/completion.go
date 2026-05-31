@@ -51,7 +51,7 @@ _gibcert() {
         cword=$COMP_CWORD
     }
 
-    local commands="help version check plan apply issue renew account ca dns-persist deploy revoke delete rename list show import completion"
+    local commands="help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -82,6 +82,12 @@ _gibcert() {
     dns-persist)
         case $cword in
         2) COMPREPLY=($(compgen -W "install check" -- "$cur")) ;;
+        3) COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur")) ;;
+        esac
+        ;;
+    tlsa)
+        case $cword in
+        2) COMPREPLY=($(compgen -W "reconcile" -- "$cur")) ;;
         3) COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur")) ;;
         esac
         ;;
@@ -198,6 +204,18 @@ _gibcert() {
                 ;;
             esac
             ;;
+        tlsa)
+            _arguments '1: :_gibcert_tlsa_subcmds' '*:: :->tlsaargs'
+            case $state in
+            tlsaargs)
+                case $words[1] in
+                reconcile)
+                    _arguments '1: :_gibcert_certs'
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
         import)
             _arguments '1: :_gibcert_import_sources' '*:: :->importargs'
             case $state in
@@ -273,6 +291,7 @@ _gibcert_commands() {
         'account:manage ACME accounts'
         'ca:list, show, or export CA profiles'
         'dns-persist:manage dns-persist-01 standing records'
+        'tlsa:manage DANE TLSA records'
         'deploy:deploy stored certificate material to configured targets'
         'revoke:revoke a stored certificate at the CA'
         'delete:remove local certificate state, optionally undeploying'
@@ -321,6 +340,12 @@ _gibcert_dns_persist_subcmds() {
     _describe 'subcommand' subcmds
 }
 
+_gibcert_tlsa_subcmds() {
+    local -a subcmds
+    subcmds=('reconcile:reconcile stored certificate TLSA records')
+    _describe 'subcommand' subcmds
+}
+
 _gibcert_import_sources() {
     _describe 'source' '(acme.sh:import from acme.sh certbot:import from certbot dehydrated:import from dehydrated lego:import from lego pem:import explicit PEM files)'
 }
@@ -331,7 +356,7 @@ _gibcert
 const fishCompletion = `# fish completion for gibcert
 
 function __gibcert_no_subcommand
-    set -l commands help version check plan apply issue renew account ca dns-persist deploy revoke delete rename list show import completion
+    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion
     not __fish_seen_subcommand_from $commands
 end
 
@@ -363,6 +388,7 @@ complete -c gibcert -n __gibcert_no_subcommand -a renew -d 'renew due certificat
 complete -c gibcert -n __gibcert_no_subcommand -a account -d 'manage ACME accounts'
 complete -c gibcert -n __gibcert_no_subcommand -a ca -d 'list, show, or export CA profiles'
 complete -c gibcert -n __gibcert_no_subcommand -a dns-persist -d 'manage dns-persist-01 standing records'
+complete -c gibcert -n __gibcert_no_subcommand -a tlsa -d 'manage DANE TLSA records'
 complete -c gibcert -n __gibcert_no_subcommand -a deploy -d 'deploy stored certificate material'
 complete -c gibcert -n __gibcert_no_subcommand -a revoke -d 'revoke a stored certificate at the CA'
 complete -c gibcert -n __gibcert_no_subcommand -a delete -d 'remove local certificate state'
@@ -399,6 +425,10 @@ complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and not __fish_
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and not __fish_seen_subcommand_from install check' -a check -d 'check standing DNS record'
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen_subcommand_from install' -l print -d 'print the record without writing it'
 complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen_subcommand_from install check' -a '(__gibcert_certs)'
+
+# tlsa subcommands and cert arg
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and not __fish_seen_subcommand_from reconcile' -a reconcile -d 'reconcile stored certificate TLSA records'
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -a '(__gibcert_certs)'
 
 # commands that take a cert name
 complete -c gibcert -n '__fish_seen_subcommand_from deploy show' -a '(__gibcert_certs)'
