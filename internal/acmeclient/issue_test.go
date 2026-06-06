@@ -22,8 +22,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -108,6 +112,172 @@ func TestChainMatchesPreferredRootOrIssuer(t *testing.T) {
 	}
 	if chainMatchesPreferred([][]byte{intermediate.der}, "Other Root") {
 		t.Fatal("chain matched unexpected preferred chain")
+	}
+}
+
+func TestSelectChainAndPEMDecode(t *testing.T) {
+	root := testCertDER(t, "Root A", nil, nil)
+	otherRoot := testCertDER(t, "Root B", nil, nil)
+	leaf := testCertDER(t, "example.com", root.cert, root.key)
+	otherLeaf := testCertDER(t, "example.org", otherRoot.cert, otherRoot.key)
+
+	defaultChain := pemChain(leaf.der, root.der)
+	alternateChain := pemChain(otherLeaf.der, otherRoot.der)
+	selected, err := selectChain([]acme.Certificate{
+		{ChainPEM: defaultChain},
+		{ChainPEM: alternateChain},
+	}, "Root B")
+	if err != nil {
+		t.Fatalf("selectChain preferred: %v", err)
+	}
+	if len(selected) != 2 || string(selected[1]) != string(otherRoot.der) {
+		t.Fatalf("selected chain got %d certs, top=%x", len(selected), selected[len(selected)-1])
+	}
+
+	selected, err = selectChain([]acme.Certificate{{ChainPEM: defaultChain}}, "")
+	if err != nil {
+		t.Fatalf("selectChain default: %v", err)
+	}
+	if len(selected) != 2 || string(selected[0]) != string(leaf.der) {
+		t.Fatalf("default chain got %d certs", len(selected))
+	}
+	if _, err := selectChain([]acme.Certificate{{ChainPEM: defaultChain}}, "Missing Root"); err == nil {
+		t.Fatal("selectChain matched missing preferred chain")
+	}
+	if _, err := pemChainToDER([]byte("not certificates")); err == nil {
+		t.Fatal("pemChainToDER accepted chain without certificates")
+	}
+}
+
+func TestFindCAProfileAndAliasFQDN(t *testing.T) {
+	cfg := &config.Config{CAs: []*config.CA{{
+		Name:    "letsencrypt",
+		Type:    "acme",
+		Profile: "classic",
+	}}}
+	if got := findCAProfile(cfg, "letsencrypt"); got == nil || got.Name != "letsencrypt" {
+		t.Fatalf("findCAProfile got %#v", got)
+	}
+	if got := findCAProfile(cfg, "missing"); got != nil {
+		t.Fatalf("findCAProfile missing got %#v", got)
+	}
+	if got := findCAProfile(cfg, ""); got != nil {
+		t.Fatalf("findCAProfile empty got %#v", got)
+	}
+
+	if got := aliasFQDN(config.ChallengeSpec{AliasFQDN: "custom.example."}, "example.com"); got != "custom.example." {
+		t.Fatalf("AliasFQDN got %q", got)
+	}
+	if got := aliasFQDN(config.ChallengeSpec{AliasDomain: "delegate.example"}, "example.com"); got != "_acme-challenge.example.com.delegate.example" {
+		t.Fatalf("AliasDomain got %q", got)
+	}
+	if got := aliasFQDN(config.ChallengeSpec{}, "example.com"); got != "_acme-challenge.example.com" {
+		t.Fatalf("default alias got %q", got)
+	}
+}
+
+func TestNewOrderRetriesAlreadyReplacedWithoutReplaces(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newOrderCalls int
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Replay-Nonce", "nonce-value")
+		switch r.URL.Path {
+		case "/directory":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"newNonce":   srv.URL + "/nonce",
+				"newAccount": srv.URL + "/new-account",
+				"newOrder":   srv.URL + "/new-order",
+				"revokeCert": srv.URL + "/revoke",
+				"keyChange":  srv.URL + "/key-change",
+			})
+		case "/nonce":
+			w.WriteHeader(http.StatusOK)
+		case "/new-order":
+			newOrderCalls++
+			if newOrderCalls == 1 {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"type":   acme.ProblemTypeAlreadyReplaced,
+					"status": http.StatusConflict,
+					"detail": "already replaced",
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Location", srv.URL+"/order/1")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(acme.Order{Status: acme.StatusPending})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		acme: newACMEClient(srv.URL+"/directory", srv.Client()),
+		account: acme.Account{
+			Location:   srv.URL + "/acct/1",
+			PrivateKey: key,
+		},
+	}
+	order, err := client.newOrder(context.Background(), acme.Order{
+		Identifiers: []acme.Identifier{{Type: "dns", Value: "example.com"}},
+		Replaces:    "old-cert-id",
+	})
+	if err != nil {
+		t.Fatalf("newOrder: %v", err)
+	}
+	if newOrderCalls != 2 {
+		t.Fatalf("new-order calls got %d, want 2", newOrderCalls)
+	}
+	if order.Location != srv.URL+"/order/1" {
+		t.Fatalf("order location got %q", order.Location)
+	}
+}
+
+func TestPresentHTTP01UsesWebrootAndGlobalFallback(t *testing.T) {
+	webroot := t.TempDir()
+	cleanup, err := presentHTTP01(
+		&config.Certificate{Name: "example.com"},
+		&config.GlobalChallenge{Webroot: webroot},
+		nil,
+		"token",
+		"key-auth",
+	)
+	if err != nil {
+		t.Fatalf("presentHTTP01: %v", err)
+	}
+	path := webroot + "/.well-known/acme-challenge/token"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read challenge file: %v", err)
+	}
+	if string(raw) != "key-auth" {
+		t.Fatalf("challenge file got %q", raw)
+	}
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup left challenge file: %v", err)
+	}
+}
+
+func TestDNSPresenterFactories(t *testing.T) {
+	provider := &config.Provider{Name: "dns", Driver: "rfc2136"}
+	if _, ok := nsupdateDNSPresenter(provider, nil, io.Discard).(*challenge.DNSNSUpdate); !ok {
+		t.Fatal("nsupdateDNSPresenter did not return DNSNSUpdate")
+	}
+	provider.Driver = "powerdns"
+	if _, ok := powerDNSPresenter(provider, nil, io.Discard).(*challenge.DNSPowerDNS); !ok {
+		t.Fatal("powerDNSPresenter did not return DNSPowerDNS")
+	}
+	if _, err := presentDNS(context.Background(), &config.Provider{Name: "bad", Driver: "missing"}, "", "", "", "", 0, nil, io.Discard); err == nil {
+		t.Fatal("presentDNS accepted unsupported driver")
 	}
 }
 
@@ -263,4 +433,12 @@ type mockPresenter func(context.Context, challenge.Request) (func(), error)
 
 func (m mockPresenter) Present(ctx context.Context, req challenge.Request) (func(), error) {
 	return m(ctx, req)
+}
+
+func pemChain(ders ...[]byte) []byte {
+	var out []byte
+	for _, der := range ders {
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	return out
 }

@@ -17,6 +17,9 @@ package localca
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -89,6 +92,74 @@ func TestIssueCreatesLocalCAAndLeafCertificate(t *testing.T) {
 	}
 	if got, want := meta.IssuerType, "local"; got != want {
 		t.Fatalf("meta IssuerType: got %q, want %q", got, want)
+	}
+}
+
+func TestCheckCAStatusTransitions(t *testing.T) {
+	store := storage.New(t.TempDir())
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ca := &config.CA{Name: "dev", Type: "local"}
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	st := CheckCA(ca, store, now)
+	if st.Ready || st.Reason != "local CA certificate missing or unreadable" {
+		t.Fatalf("missing CheckCA got %#v", st)
+	}
+	if err := Issue(&config.Certificate{Name: "localhost", CA: "dev", Names: []string{"localhost"}}, ca, store, IssueOptions{Out: bytes.NewBuffer(nil), Now: now}); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	st = CheckCA(ca, store, now)
+	if !st.Ready || st.Reason != "local CA ready" {
+		t.Fatalf("ready CheckCA got %#v", st)
+	}
+	if err := os.Remove(store.CAPaths("dev").Key); err != nil {
+		t.Fatal(err)
+	}
+	st = CheckCA(ca, store, now)
+	if st.Ready || st.Reason != "local CA key missing or unreadable" {
+		t.Fatalf("missing key CheckCA got %#v", st)
+	}
+}
+
+func TestLocalCAHelpers(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caDER, caCert, err := createCA(&config.CA{Name: "dev", Type: "local", ValidFor: time.Hour}, key, now)
+	if err != nil {
+		t.Fatalf("createCA: %v", err)
+	}
+	if len(caDER) == 0 || !caCert.IsCA {
+		t.Fatalf("createCA got len=%d cert=%#v", len(caDER), caCert)
+	}
+	if !certReusable(caCert, now) {
+		t.Fatal("fresh CA cert should be reusable")
+	}
+	if certReusable(nil, now) {
+		t.Fatal("nil cert should not be reusable")
+	}
+	if certReusable(caCert, now.Add(2*time.Hour)) {
+		t.Fatal("expired cert should not be reusable")
+	}
+
+	_, _, err = createLeaf(&config.Certificate{
+		Name:     "late",
+		Names:    []string{"late.example"},
+		ValidFor: 10 * time.Hour,
+	}, caCert, key, key, caCert.NotAfter.Add(time.Hour))
+	if err == nil || !strings.Contains(err.Error(), "expires before requested certificate validity") {
+		t.Fatalf("createLeaf expiry error got %v", err)
+	}
+
+	path := t.TempDir() + "/bad.pem"
+	if err := os.WriteFile(path, []byte("not pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCert(path); err == nil {
+		t.Fatal("readCert accepted non-PEM input")
 	}
 }
 

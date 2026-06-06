@@ -196,6 +196,93 @@ func TestDNSPowerDNSReadsSecretFromEnv(t *testing.T) {
 	cleanup()
 }
 
+func TestDNSPowerDNSAddAndRemoveRecord(t *testing.T) {
+	fake := newFakePowerDNS("topsecret")
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	req := EditRequest{
+		Owner:      "_443._tcp.example.com",
+		RecordType: "TXT",
+		RData:      `"tlsa-value"`,
+		TTL:        300,
+	}
+	if err := d.AddRecord(context.Background(), req); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	fake.mu.Lock()
+	recs := fake.rrsets["_443._tcp.example.com."]
+	fake.mu.Unlock()
+	if len(recs) != 1 || recs[0].Content != `"tlsa-value"` {
+		t.Fatalf("after add: got %+v, want single record", recs)
+	}
+
+	if err := d.RemoveRecord(context.Background(), req); err != nil {
+		t.Fatalf("RemoveRecord: %v", err)
+	}
+	fake.mu.Lock()
+	_, present := fake.rrsets["_443._tcp.example.com."]
+	fake.mu.Unlock()
+	if present {
+		t.Fatal("after remove: rrset should be deleted")
+	}
+}
+
+func TestDNSPowerDNSConfigErrors(t *testing.T) {
+	if _, err := (&DNSPowerDNS{}).Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "missing provider") {
+		t.Fatalf("missing provider error = %v", err)
+	}
+	provider := &config.Provider{Name: "powerdns-test", Fields: map[string][]string{}}
+	if _, err := (&DNSPowerDNS{Provider: provider}).Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "api-url is required") {
+		t.Fatalf("missing api-url error = %v", err)
+	}
+	provider = &config.Provider{
+		Name:   "powerdns-test",
+		Fields: map[string][]string{"api-url": {"http://127.0.0.1:1"}, "ttl": {"nope"}},
+		Secrets: []*config.Secret{
+			{Name: "api-key", Value: "topsecret"},
+		},
+	}
+	if _, err := (&DNSPowerDNS{Provider: provider}).Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "invalid ttl") {
+		t.Fatalf("invalid ttl error = %v", err)
+	}
+	provider = &config.Provider{
+		Name:   "powerdns-test",
+		Fields: map[string][]string{"api-url": {"http://127.0.0.1:1"}},
+	}
+	if _, err := (&DNSPowerDNS{Provider: provider}).Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), `secret "api-key" is required`) {
+		t.Fatalf("missing api-key error = %v", err)
+	}
+}
+
+func TestDNSPowerDNSNoMatchingZone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/servers/localhost/zones" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{{"name": "unrelated.example."}})
+	}))
+	defer srv.Close()
+
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	_, err := d.Present(context.Background(), Request{FQDN: "_acme-challenge.example.com", Value: "token"})
+	if err == nil || !strings.Contains(err.Error(), "no zone") {
+		t.Fatalf("Present error = %v, want no zone", err)
+	}
+}
+
+func TestPowerDNSPickZoneChoosesLongestMatch(t *testing.T) {
+	zones := []string{"example.com.", "sub.example.com.", "com."}
+	if got := powerDNSPickZone(zones, "_acme-challenge.sub.example.com."); got != "sub.example.com." {
+		t.Fatalf("powerDNSPickZone got %q, want sub.example.com.", got)
+	}
+	if got := powerDNSPickZone(zones, "elsewhere.invalid."); got != "" {
+		t.Fatalf("powerDNSPickZone got %q, want no match", got)
+	}
+}
+
 func TestDNSPowerDNSAuthFailureSurfaced(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)

@@ -24,6 +24,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"foundry.fsky.io/fsky/gibcert/internal/config"
 	"foundry.fsky.io/fsky/gibcert/internal/storage"
@@ -116,6 +117,124 @@ func TestReconcileTLSAUsesStoredMaterialAndCreatesMetadata(t *testing.T) {
 		if !strings.HasPrefix(r.Content, "3 1 1 ") {
 			t.Fatalf("record content got %q, want TLSA 3 1 1", r.Content)
 		}
+	}
+}
+
+func TestTLSAHelperBranches(t *testing.T) {
+	meta := storage.CertMeta{}
+	fillTLSAMetaDefaults(&meta, storage.CertMeta{
+		Account:    "account",
+		CA:         "ca",
+		IssuerType: "acme",
+		Directory:  "https://ca.example/directory",
+	})
+	if meta.Account != "account" || meta.CA != "ca" || meta.IssuerType != "acme" || meta.Directory != "https://ca.example/directory" {
+		t.Fatalf("fillTLSAMetaDefaults got %#v", meta)
+	}
+	meta.Account = "kept"
+	fillTLSAMetaDefaults(&meta, storage.CertMeta{Account: "default"})
+	if meta.Account != "kept" {
+		t.Fatalf("fillTLSAMetaDefaults overwrote account: %#v", meta)
+	}
+
+	rec := storage.TLSARecord{Owner: "_443._tcp.example.com.", RData: "3 1 1 abc"}
+	if !containsTLSA([]storage.TLSARecord{rec}, rec) {
+		t.Fatal("containsTLSA did not find existing record")
+	}
+	if containsTLSA([]storage.TLSARecord{rec}, storage.TLSARecord{Owner: rec.Owner, RData: "3 1 1 def"}) {
+		t.Fatal("containsTLSA matched different record data")
+	}
+	if _, err := newDNSEditor(&config.Provider{Name: "bad", Driver: "manual"}, io.Discard); err == nil {
+		t.Fatal("newDNSEditor accepted unsupported driver")
+	}
+	if err := ReconcileTLSA(context.Background(), storage.New(t.TempDir()), &config.Config{}, &config.Certificate{Name: "no-tlsa"}, TLSAReconcileOptions{}); err == nil {
+		t.Fatal("ReconcileTLSA accepted certificate without TLSA block")
+	}
+}
+
+func TestPickTLSAKey(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	cert := &config.Certificate{
+		Name: "example.com",
+		Key:  config.KeySpec{Type: "ecdsa"},
+		TLSA: &config.TLSASpec{TTL: 60},
+	}
+
+	store := storage.New(t.TempDir())
+	paths := store.CertPaths(cert.Name)
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := testCertDER(t, "current", nil, nil)
+	next := testCertDER(t, "next", nil, nil)
+	if err := storage.WriteKey(paths.Key, current.key); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteKey(paths.KeyNext, next.key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCertMeta(cert.Name, storage.CertMeta{
+		Name: cert.Name,
+		TLSA: &storage.CertTLSAMeta{
+			TTL:             60,
+			NextPublishedAt: now.Add(-2 * time.Minute),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := pickTLSAKey(cert, store, now)
+	if err != nil {
+		t.Fatalf("pickTLSAKey mature staged: %v", err)
+	}
+	if !decision.StagedKey || decision.ReusedKey || decision.Bootstrap {
+		t.Fatalf("mature staged decision got %#v", decision)
+	}
+
+	if err := store.SaveCertMeta(cert.Name, storage.CertMeta{
+		Name: cert.Name,
+		TLSA: &storage.CertTLSAMeta{
+			TTL:             60,
+			NextPublishedAt: now.Add(-30 * time.Second),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err = pickTLSAKey(cert, store, now)
+	if err != nil {
+		t.Fatalf("pickTLSAKey immature staged: %v", err)
+	}
+	if !decision.ReusedKey || !decision.NextNotYet || decision.StagedKey {
+		t.Fatalf("immature staged decision got %#v", decision)
+	}
+
+	if err := os.Remove(paths.KeyNext); err != nil {
+		t.Fatal(err)
+	}
+	decision, err = pickTLSAKey(cert, store, now)
+	if err != nil {
+		t.Fatalf("pickTLSAKey missing staged: %v", err)
+	}
+	if !decision.ReusedKey || !decision.NextMissing {
+		t.Fatalf("missing staged decision got %#v", decision)
+	}
+
+	bootstrapStore := storage.New(t.TempDir())
+	decision, err = pickTLSAKey(&config.Certificate{Name: "new", Key: config.KeySpec{Type: "ecdsa"}, TLSA: &config.TLSASpec{TTL: 60}}, bootstrapStore, now)
+	if err != nil {
+		t.Fatalf("pickTLSAKey bootstrap: %v", err)
+	}
+	if !decision.Bootstrap || decision.Key == nil {
+		t.Fatalf("bootstrap decision got %#v", decision)
+	}
+}
+
+func TestReadStoredLeafRejectsInvalidPEM(t *testing.T) {
+	path := t.TempDir() + "/cert.pem"
+	if err := os.WriteFile(path, []byte("not pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readStoredLeaf(path); err == nil {
+		t.Fatal("readStoredLeaf accepted invalid PEM")
 	}
 }
 

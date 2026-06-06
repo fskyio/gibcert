@@ -101,3 +101,43 @@ func TestResolveEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("environment overrides not applied: %+v", p)
 	}
 }
+
+func TestFallbackRootsAndXDG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_TEST_HOME", "")
+	if got := xdg("XDG_TEST_HOME", filepath.Join(home, "fallback")); got != filepath.Join(home, "fallback") {
+		t.Fatalf("xdg fallback got %q", got)
+	}
+	t.Setenv("XDG_TEST_HOME", filepath.Join(home, "xdg"))
+	if got := xdg("XDG_TEST_HOME", filepath.Join(home, "fallback")); got != filepath.Join(home, "xdg") {
+		t.Fatalf("xdg env got %q", got)
+	}
+
+	configRoot, err := userFallbackRoot("config")
+	if err != nil {
+		t.Fatalf("userFallbackRoot config: %v", err)
+	}
+	cacheRoot, err := userFallbackRoot("cache")
+	if err != nil {
+		t.Fatalf("userFallbackRoot cache: %v", err)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if configRoot != filepath.Join(home, "Library", "Application Support") || cacheRoot != filepath.Join(home, "Library", "Caches") {
+			t.Fatalf("darwin fallback roots got config=%q cache=%q", configRoot, cacheRoot)
+		}
+	case "windows":
+		if configRoot != filepath.Join(home, "AppData", "Roaming") || cacheRoot != filepath.Join(home, "AppData", "Local") {
+			t.Fatalf("windows fallback roots got config=%q cache=%q", configRoot, cacheRoot)
+		}
+	case "plan9":
+		if configRoot != filepath.Join(home, "lib") || cacheRoot != filepath.Join(home, "lib", "cache") {
+			t.Fatalf("plan9 fallback roots got config=%q cache=%q", configRoot, cacheRoot)
+		}
+	default:
+		if configRoot != filepath.Join(home, ".config") || cacheRoot != filepath.Join(home, ".cache") {
+			t.Fatalf("fallback roots got config=%q cache=%q", configRoot, cacheRoot)
+		}
+	}
+}

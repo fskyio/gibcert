@@ -247,6 +247,73 @@ func TestDeployPreservesExistingModeWhenModeUnset(t *testing.T) {
 	assertMode(t, dst, 0o640)
 }
 
+func TestDeployAppliesModeToUnchangedContent(t *testing.T) {
+	root := t.TempDir()
+	store := storage.New(filepath.Join(root, "state"))
+	writeCanonical(t, store, "example.com")
+	dst := filepath.Join(root, "deploy", "fullchain.pem")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("fullchain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mode := os.FileMode(0o600)
+	cert := &config.Certificate{
+		Name: "example.com",
+		Deploys: []*config.Deploy{{
+			Name:      "local",
+			Fullchain: dst,
+			Mode:      &mode,
+		}},
+	}
+
+	results, err := Deploy(cert, store, os.Stdout)
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(results[0].Changed) != 0 {
+		t.Fatalf("changed got %v, want none for content-identical file", results[0].Changed)
+	}
+	assertMode(t, dst, 0o600)
+}
+
+func TestDeployMissingCanonicalMaterialFailsEarly(t *testing.T) {
+	root := t.TempDir()
+	store := storage.New(filepath.Join(root, "state"))
+	cert := &config.Certificate{
+		Name: "missing.example",
+		Deploys: []*config.Deploy{{
+			Name:      "local",
+			Fullchain: filepath.Join(root, "deploy", "fullchain.pem"),
+		}},
+	}
+
+	if _, err := Deploy(cert, store, os.Stdout); err == nil || !strings.Contains(err.Error(), "read canonical cert") {
+		t.Fatalf("Deploy error = %v, want canonical cert read error", err)
+	}
+}
+
+func TestRunReloadExportsEnvironment(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "reload.log")
+	t.Setenv("GIBCERT_TEST_RELOAD_LOG", logPath)
+	err := RunReload(`printf '%s|%s|%s' "$GIBCERT_HOOK_API" "$GIBCERT_EVENT" "$GIBCERT_CHANGED_CERTS" > "$GIBCERT_TEST_RELOAD_LOG"`, []string{"a.example", "b.example"})
+	if err != nil {
+		t.Fatalf("RunReload: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != "1|reload|a.example,b.example" {
+		t.Fatalf("reload env got %q", got)
+	}
+	if err := RunReload("", []string{"ignored.example"}); err != nil {
+		t.Fatalf("empty RunReload: %v", err)
+	}
+}
+
 func TestUndeployOnlyRemovesMatchingFiles(t *testing.T) {
 	root := t.TempDir()
 	store := storage.New(filepath.Join(root, "state"))

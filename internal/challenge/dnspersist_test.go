@@ -17,6 +17,9 @@ package challenge
 
 import (
 	"context"
+	"errors"
+	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -168,5 +171,48 @@ func TestVerifyDNSPersistRecordAcceptsChallengeIssuers(t *testing.T) {
 	}
 	if !res.Matched {
 		t.Fatal("expected second issuer to match")
+	}
+}
+
+func TestVerifyDNSPersistRecordLookupErrors(t *testing.T) {
+	lookupMissing := func(_ context.Context, _ string) ([]string, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "_validation-persist.example.com", IsNotFound: true}
+	}
+	res, err := verifyDNSPersistRecord(context.Background(), "example.com", DNSPersistVerifyOptions{
+		IssuerDomainNames: []string{"ca.example"},
+		AccountURI:        "https://ca.example/acct/1",
+	}, lookupMissing)
+	if err != nil {
+		t.Fatalf("missing lookup error = %v, want nil", err)
+	}
+	if res.Matched || len(res.Found) != 0 {
+		t.Fatalf("missing lookup result = %+v, want unmatched with no records", res)
+	}
+
+	lookupFailure := func(_ context.Context, _ string) ([]string, error) {
+		return nil, errors.New("resolver unavailable")
+	}
+	_, err = verifyDNSPersistRecord(context.Background(), "example.com", DNSPersistVerifyOptions{}, lookupFailure)
+	if err == nil || !strings.Contains(err.Error(), "lookup _validation-persist.example.com") {
+		t.Fatalf("lookup failure error = %v", err)
+	}
+}
+
+func TestParsePersistFields(t *testing.T) {
+	fields := parsePersistFields(" ca.example. ; accounturi = https://ca.example/acct/1 ; policy = wildcard ; ignored ; persistUntil=1893456000")
+	if fields[""] != "ca.example." {
+		t.Fatalf("ca identifier got %q", fields[""])
+	}
+	if fields["accounturi"] != "https://ca.example/acct/1" {
+		t.Fatalf("accounturi got %q", fields["accounturi"])
+	}
+	if fields["policy"] != "wildcard" {
+		t.Fatalf("policy got %q", fields["policy"])
+	}
+	if fields["persistuntil"] != "1893456000" {
+		t.Fatalf("persistUntil got %q", fields["persistuntil"])
+	}
+	if _, ok := fields["ignored"]; ok {
+		t.Fatalf("malformed field should be ignored: %+v", fields)
 	}
 }

@@ -268,6 +268,35 @@ esac
 	}
 }
 
+func TestDNSExecUsesOperationSpecificShellCommand(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "present.log")
+	t.Setenv("GIBCERT_TEST_PRESENT_LOG", logPath)
+	provider := &config.Provider{
+		Name:   "exec-test",
+		Type:   "dns",
+		Driver: "exec",
+		Fields: map[string][]string{
+			"present": {`printf '%s|%s|%s' "$DNSREC_OPERATION" "$DNSREC_RECORD_OWNER" "$DNSREC_RECORD_RDATA" > "$GIBCERT_TEST_PRESENT_LOG"`},
+		},
+	}
+	d := &DNSExec{Provider: provider}
+
+	if _, err := d.Present(context.Background(), Request{
+		FQDN:  "_acme-challenge.example.com",
+		Value: "txt-value",
+	}); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != "present|_acme-challenge.example.com.|txt-value" {
+		t.Fatalf("operation shell command env got %q", got)
+	}
+}
+
 func TestDNSExecFailureIncludesOutput(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "provider.sh")
@@ -303,6 +332,48 @@ exit 7
 		if !strings.Contains(got, want) {
 			t.Fatalf("error missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestDNSExecFailureOutputIsLimited(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "provider.sh")
+	body := `#!/bin/sh
+yes x | head -c 40000
+exit 9
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	provider := &config.Provider{
+		Name:   "exec-test",
+		Type:   "dns",
+		Driver: "exec",
+		Fields: map[string][]string{"command": {script}},
+	}
+	d := &DNSExec{Provider: provider}
+
+	_, err := d.Present(context.Background(), Request{FQDN: "_acme-challenge.example.com", Value: "txt"})
+	if err == nil {
+		t.Fatal("Present succeeded, want error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "... output truncated ...") {
+		t.Fatalf("error missing truncation marker:\n%s", got)
+	}
+	if len(got) > dnsExecOutputLimit+1024 {
+		t.Fatalf("error length got %d, want bounded near output limit", len(got))
+	}
+}
+
+func TestDNSExecMissingProviderAndCommandErrors(t *testing.T) {
+	d := &DNSExec{}
+	if _, err := d.Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "missing provider") {
+		t.Fatalf("missing provider error = %v", err)
+	}
+	d.Provider = &config.Provider{Name: "exec-test", Fields: map[string][]string{}}
+	if _, err := d.Present(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "requires command or present field") {
+		t.Fatalf("missing command error = %v", err)
 	}
 }
 

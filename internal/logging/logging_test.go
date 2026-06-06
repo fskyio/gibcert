@@ -18,6 +18,7 @@ package logging
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -53,4 +54,43 @@ func TestLoggerRejectsUnknownFormat(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported log format") {
 		t.Fatalf("error got %q, want unsupported log format", err)
 	}
+}
+
+func TestLoggerTextInfoWarnAndClose(t *testing.T) {
+	var buf bytes.Buffer
+	l, err := New(Options{Format: "text", Stderr: &buf})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	l.Info("ready", "cert", "example.com")
+	l.Warn("careful", "reason", "test")
+	out := buf.String()
+	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "msg=ready") {
+		t.Fatalf("info log missing from %q", out)
+	}
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "msg=careful") {
+		t.Fatalf("warn log missing from %q", out)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := (*Logger)(nil).Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+}
+
+func TestLoggerClosePropagatesCloserError(t *testing.T) {
+	want := errors.New("close failed")
+	l := &Logger{closer: errCloser{err: want}}
+	if err := l.Close(); !errors.Is(err, want) {
+		t.Fatalf("Close got %v, want %v", err, want)
+	}
+}
+
+type errCloser struct {
+	err error
+}
+
+func (c errCloser) Close() error {
+	return c.err
 }

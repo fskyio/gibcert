@@ -16,6 +16,7 @@
 package challenge
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -74,5 +75,93 @@ echo "---" >> "$LOG"
 		if !strings.Contains(got, want) {
 			t.Fatalf("log missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestDNSNSUpdateEditRecordDefaultsAndErrors(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "nsupdate.log")
+	script := filepath.Join(dir, "nsupdate-stub.sh")
+	body := `#!/bin/sh
+cat >> "$LOG"
+echo "---" >> "$LOG"
+case "$FAIL_NSUPDATE" in
+  1) exit 12 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOG", logPath)
+	provider := &config.Provider{
+		Name:   "rfc2136-test",
+		Type:   "dns",
+		Driver: "rfc2136",
+		Fields: map[string][]string{
+			"command": {script},
+			"server":  {"192.0.2.53"},
+		},
+	}
+	d := &DNSNSUpdate{Provider: provider}
+
+	req := EditRequest{Owner: "_443._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 abcdef"}
+	if err := d.AddRecord(context.Background(), req); err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if err := d.RemoveRecord(context.Background(), req); err != nil {
+		t.Fatalf("RemoveRecord: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		"update add _443._tcp.example.com. 60 TLSA 3 1 1 abcdef",
+		"update delete _443._tcp.example.com. TLSA 3 1 1 abcdef",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log missing %q:\n%s", want, got)
+		}
+	}
+
+	t.Setenv("FAIL_NSUPDATE", "1")
+	if err := d.AddRecord(context.Background(), req); err == nil || !strings.Contains(err.Error(), "nsupdate add") {
+		t.Fatalf("AddRecord failure error = %v", err)
+	}
+}
+
+func TestDNSNSUpdateCleanupWarning(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "nsupdate-stub.sh")
+	body := `#!/bin/sh
+case "$FAIL_CLEANUP" in
+  1)
+    if grep -q '^update delete ' >/dev/null; then
+      exit 13
+    fi
+    ;;
+esac
+cat >/dev/null
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	provider := &config.Provider{
+		Name:   "rfc2136-test",
+		Type:   "dns",
+		Driver: "rfc2136",
+		Fields: map[string][]string{"command": {script}},
+	}
+	var out bytes.Buffer
+	d := &DNSNSUpdate{Provider: provider, Out: &out}
+	cleanup, err := d.Present(context.Background(), Request{FQDN: "_acme-challenge.example.com", Value: "txt"})
+	if err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	t.Setenv("FAIL_CLEANUP", "1")
+	cleanup()
+	if got := out.String(); !strings.Contains(got, "warning: nsupdate cleanup failed") {
+		t.Fatalf("cleanup warning missing:\n%s", got)
 	}
 }

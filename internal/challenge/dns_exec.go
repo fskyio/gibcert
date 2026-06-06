@@ -207,6 +207,9 @@ func (d *DNSExec) editEnv(ctx context.Context, operation string, req EditRequest
 }
 
 func (d *DNSExec) providerEnv(ctx context.Context) ([]string, error) {
+	if d.Provider == nil {
+		return nil, fmt.Errorf("missing provider")
+	}
 	var env []string
 	for name, vals := range d.Provider.Fields {
 		if name == "command" || name == "present" || name == "cleanup" ||

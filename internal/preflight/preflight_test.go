@@ -16,6 +16,8 @@
 package preflight
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,5 +63,73 @@ func TestCheckRejectsMissingHTTP01Webroot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "webroot") {
 		t.Fatalf("error %q does not mention webroot", err)
+	}
+}
+
+func TestCheckUsesGlobalHTTP01WebrootAndSkipsLocalCA(t *testing.T) {
+	webroot := t.TempDir()
+	cfg := &config.Config{
+		CAs: []*config.CA{{Name: "local", Type: "local"}},
+		GlobalChallenge: &config.GlobalChallenge{
+			Type:    "http-01",
+			Webroot: webroot,
+		},
+		Certificates: []*config.Certificate{
+			{
+				Name:    "example.com",
+				Account: "a",
+				Names:   []string{"example.com"},
+			},
+			{
+				Name:  "local.example",
+				CA:    "local",
+				Names: []string{"local.example"},
+				Challenge: config.ChallengeSpec{
+					Type:    "http-01",
+					Webroot: "/definitely/missing",
+				},
+			},
+		},
+	}
+	if err := Check(cfg); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(webroot, ".well-known", "acme-challenge")); err != nil {
+		t.Fatalf("challenge dir not created: %v", err)
+	}
+}
+
+func TestCheckListenValidation(t *testing.T) {
+	cfg := &config.Config{
+		Certificates: []*config.Certificate{{
+			Name:    "example.com",
+			Account: "a",
+			Names:   []string{"example.com"},
+			Challenge: config.ChallengeSpec{
+				Type:   "tls-alpn-01",
+				Listen: "not-a-host-port",
+			},
+		}},
+	}
+	err := Check(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tls-alpn-01 listen") {
+		t.Fatalf("Check got %v, want listen error", err)
+	}
+	if err := checkListen("example.com", "http-01", "127.0.0.1:0"); err != nil {
+		t.Fatalf("checkListen valid: %v", err)
+	}
+	if got := challengeType(&config.Config{GlobalChallenge: &config.GlobalChallenge{Type: "dns-01"}}, &config.Certificate{}); got != "dns-01" {
+		t.Fatalf("challengeType global got %q", got)
+	}
+}
+
+func TestCheckWebrootRejectsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-dir")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := checkWebroot("example.com", path)
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("checkWebroot got %v, want file error", err)
 	}
 }
