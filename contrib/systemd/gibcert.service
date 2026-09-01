@@ -11,7 +11,6 @@ StateDirectory=gibcert
 CacheDirectory=gibcert
 RuntimeDirectory=gibcert
 ConfigurationDirectory=gibcert
-UMask=0077
 Nice=5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
