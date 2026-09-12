@@ -829,32 +829,26 @@ certificate foo {
 			want: `unsupported dns driver "imaginary"`,
 		},
 		{
-			name: "exec field env collision",
+			name: "legacy exec operation command",
 			src: `
 provider custom {
   type dns
   driver exec
-  command /usr/local/bin/hook
-  api-token one
-  api.token two
+  command /usr/local/bin/provider
+  present /usr/local/bin/legacy-hook
 }`,
-			want: `exec field "api.token" conflicts with field "api-token" after environment normalization (API_TOKEN)`,
+			want: `legacy exec field "present" is not supported`,
 		},
 		{
-			name: "exec secret env collision",
+			name: "gibdns provider propagation",
 			src: `
 provider custom {
   type dns
   driver exec
-  command /usr/local/bin/hook
-  secret api-token {
-    file /tmp/token
-  }
-  secret api.token {
-    file /tmp/other-token
-  }
+  command /usr/local/bin/provider
+  propagation provider
 }`,
-			want: `exec secret "api.token" conflicts with secret "api-token" after environment normalization (API_TOKEN)`,
+			want: `propagation provider is not supported by gibdns`,
 		},
 		{
 			name: "duplicate cert",

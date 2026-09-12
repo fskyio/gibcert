@@ -141,7 +141,7 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("provider %q: unsupported dns driver %q (supported: %s)", p.Name, p.Driver, strings.Join(supportedDNSDrivers, ", ")))
 		}
 		if p.Type == "dns" && p.Driver == "exec" {
-			errs = append(errs, validateExecEnvNames(p)...)
+			errs = append(errs, validateGibDNSProvider(p)...)
 		}
 		seenSecret := map[string]bool{}
 		for _, s := range p.Secrets {
@@ -396,48 +396,34 @@ func validateTLSA(cert *Certificate, providers map[string]*Provider) error {
 	return nil
 }
 
-func validateExecEnvNames(p *Provider) []error {
+func validateGibDNSProvider(p *Provider) []error {
 	var errs []error
-
-	fieldNames := make([]string, 0, len(p.Fields))
-	for name := range p.Fields {
-		if name == "command" || name == "present" || name == "cleanup" {
+	command := p.Fields["command"]
+	if len(command) == 0 || command[0] == "" {
+		errs = append(errs, fmt.Errorf("provider %q: gibdns exec driver requires command", p.Name))
+	}
+	for _, name := range []string{"present", "cleanup", "add-record", "remove-record"} {
+		if _, ok := p.Fields[name]; ok {
+			errs = append(errs, fmt.Errorf("provider %q: legacy exec field %q is not supported; gibdns uses command for every method", p.Name, name))
+		}
+	}
+	if p.HandlesPropagation {
+		errs = append(errs, fmt.Errorf("provider %q: propagation provider is not supported by gibdns; gibcert performs propagation checks", p.Name))
+	}
+	if zone, ok := p.Fields["zone"]; ok {
+		if len(zone) != 1 || zone[0] == "" {
+			errs = append(errs, fmt.Errorf("provider %q: gibdns zone requires exactly one non-empty value", p.Name))
+		}
+	}
+	for name, values := range p.Fields {
+		if name == "command" || name == "zone" {
 			continue
 		}
-		fieldNames = append(fieldNames, name)
-	}
-	slices.Sort(fieldNames)
-	seenFields := map[string]string{}
-	for _, name := range fieldNames {
-		env := envName(name)
-		if prev, ok := seenFields[env]; ok {
-			errs = append(errs, fmt.Errorf("provider %q: exec field %q conflicts with field %q after environment normalization (%s)", p.Name, name, prev, env))
-			continue
+		if len(values) == 0 {
+			errs = append(errs, fmt.Errorf("provider %q: gibdns config field %q requires at least one value", p.Name, name))
 		}
-		seenFields[env] = name
 	}
-
-	secretNames := make([]string, 0, len(p.Secrets))
-	for _, s := range p.Secrets {
-		secretNames = append(secretNames, s.Name)
-	}
-	slices.Sort(secretNames)
-	seenSecrets := map[string]string{}
-	for _, name := range secretNames {
-		env := envName(name)
-		if prev, ok := seenSecrets[env]; ok {
-			errs = append(errs, fmt.Errorf("provider %q: exec secret %q conflicts with secret %q after environment normalization (%s)", p.Name, name, prev, env))
-			continue
-		}
-		seenSecrets[env] = name
-	}
-
 	return errs
-}
-
-func envName(name string) string {
-	replacer := strings.NewReplacer("-", "_", ".", "_")
-	return strings.ToUpper(replacer.Replace(name))
 }
 
 func validateKey(k *KeySpec) error {

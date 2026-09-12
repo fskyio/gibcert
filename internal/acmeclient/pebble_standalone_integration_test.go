@@ -20,7 +20,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -165,23 +164,8 @@ func TestPebbleDNS01AliasDomainRewritesFQDN(t *testing.T) {
 	store := newPebbleStore(t)
 	client := newPebbleClient(t, directoryURL)
 
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "dns.log")
-	script := filepath.Join(dir, "dns-provider.sh")
-	body := `#!/bin/sh
-echo "$DNSREC_OPERATION $DNSREC_RECORD_OWNER $DNSREC_DOMAIN $DNSREC_IDENTIFIER" >> "$LOG"
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LOG", logPath)
+	provider, logPath := newPebbleGibDNSProvider(t)
 	timeout := time.Duration(0)
-	provider := &config.Provider{
-		Name:   "exec",
-		Type:   "dns",
-		Driver: "exec",
-		Fields: map[string][]string{"command": {script}},
-	}
 	cert := &config.Certificate{
 		Name:    "dns-alias-pebble",
 		Account: "pebble",
@@ -217,10 +201,6 @@ echo "$DNSREC_OPERATION $DNSREC_RECORD_OWNER $DNSREC_DOMAIN $DNSREC_IDENTIFIER" 
 	if !strings.Contains(log, "cleanup "+wantFQDN) {
 		t.Fatalf("dns provider log missing cleanup at alias FQDN %q:\n%s", wantFQDN, log)
 	}
-	// Original domain/identifier must still be the real cert name.
-	if !strings.Contains(log, "alias.pebble.invalid alias.pebble.invalid") {
-		t.Fatalf("dns provider log lost original domain/identifier:\n%s", log)
-	}
 }
 
 func TestPebbleDNS01AliasFQDNRewritesFQDN(t *testing.T) {
@@ -228,23 +208,8 @@ func TestPebbleDNS01AliasFQDNRewritesFQDN(t *testing.T) {
 	store := newPebbleStore(t)
 	client := newPebbleClient(t, directoryURL)
 
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "dns.log")
-	script := filepath.Join(dir, "dns-provider.sh")
-	body := `#!/bin/sh
-echo "$DNSREC_OPERATION $DNSREC_RECORD_OWNER" >> "$LOG"
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LOG", logPath)
+	provider, logPath := newPebbleGibDNSProvider(t)
 	timeout := time.Duration(0)
-	provider := &config.Provider{
-		Name:   "exec",
-		Type:   "dns",
-		Driver: "exec",
-		Fields: map[string][]string{"command": {script}},
-	}
 	cert := &config.Certificate{
 		Name:    "dns-alias-fqdn-pebble",
 		Account: "pebble",

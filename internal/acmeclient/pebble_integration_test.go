@@ -61,23 +61,8 @@ func TestPebbleDNS01IssueHappyPath(t *testing.T) {
 	directoryURL := pebbleDirectoryURL(t)
 	store := newPebbleStore(t)
 	client := newPebbleClient(t, directoryURL)
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "dns.log")
-	script := filepath.Join(dir, "dns-provider.sh")
-	body := `#!/bin/sh
-echo "$DNSREC_OPERATION $DNSREC_RECORD_OWNER $DNSREC_RECORD_RDATA" >> "$LOG"
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LOG", logPath)
+	provider, logPath := newPebbleGibDNSProvider(t)
 	timeout := time.Duration(0)
-	provider := &config.Provider{
-		Name:   "exec",
-		Type:   "dns",
-		Driver: "exec",
-		Fields: map[string][]string{"command": {script}},
-	}
 	cert := &config.Certificate{
 		Name:    "dns-pebble",
 		Account: "pebble",

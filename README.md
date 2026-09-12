@@ -19,8 +19,8 @@ An ACME client is a pretty important tool for a sysadmin if you are doing things
 - IP identifier support
 - CA failover: automatic fallback to alternate issuers during outages or rate-limits
 - DNS-01 providers: manual, RFC 2136/nsupdate, PowerDNS out of the box
-- Bring your own DNS providers: use external scripts or programs for any DNS provider with the [DNS Record Provider
-Protocol](docs/dns-record-protocol.md)
+- Bring your own DNS providers: use external programs implementing
+  [gibdns](docs/exec-dns-providers.md)
 - DNS alias mode: keep API tokens scoped to a separate delegated zone
 - Standalone HTTP-01 and TLS-ALPN-01 listeners when no external web server is available
 - dns-persist-01 with accounturi, issuer-domain-names, wildcard policy, and persistUntil

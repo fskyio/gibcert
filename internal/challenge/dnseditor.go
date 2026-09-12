@@ -18,7 +18,6 @@ package challenge
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -34,57 +33,33 @@ type DNSEditor interface {
 	RemoveRecord(ctx context.Context, req EditRequest) error
 }
 
-// Capabilities describes what a provider reports for the DNS record provider
-// protocol capabilities operation. Reported is false when the provider did not
-// produce any recognized capability output (for example because it does not
-// implement the operation), in which case the other fields are not meaningful.
-type Capabilities struct {
-	Protocol   string
-	Bindings   []string
-	Operations []string
-	Types      []string
-	Reported   bool
-}
-
-// Supports reports whether the provider advertised the named operation.
-func (c Capabilities) Supports(operation string) bool {
-	return slices.Contains(c.Operations, operation)
-}
-
-// SupportsType reports whether the provider advertised the named record type.
-func (c Capabilities) SupportsType(recordType string) bool {
-	return slices.Contains(c.Types, recordType)
-}
-
 // CapabilityReporter is implemented by editors that can report which operations
-// and record types they support via the protocol capabilities operation.
+// and record types they support via gibdns capability discovery.
 type CapabilityReporter interface {
-	Capabilities(ctx context.Context) (Capabilities, error)
+	Capabilities(ctx context.Context) (GibDNSCapabilities, error)
 }
 
-// EnsureEditorSupports fails fast when an editor explicitly advertises a
-// capability set that omits the required operations or record type. The
-// capabilities operation is optional: editors that cannot report capabilities,
-// or whose probe fails, are allowed through, and the underlying operation
-// surfaces any real lack of support later.
+// EnsureEditorSupports fails fast when an editor advertises a capability set
+// that omits the required methods or record type. Editors without capability
+// discovery, such as built-in DNS drivers, are allowed through.
 func EnsureEditorSupports(ctx context.Context, editor DNSEditor, recordType string, operations ...string) error {
 	reporter, ok := editor.(CapabilityReporter)
 	if !ok {
 		return nil
 	}
 	caps, err := reporter.Capabilities(ctx)
-	if err != nil || !caps.Reported {
-		return nil
+	if err != nil {
+		return err
 	}
 	for _, op := range operations {
 		if !caps.Supports(op) {
 			return fmt.Errorf("provider does not support the %q operation (advertises: %s)",
-				op, strings.Join(caps.Operations, " "))
+				op, strings.Join(caps.Methods, " "))
 		}
 	}
-	if recordType != "" && len(caps.Types) > 0 && !caps.SupportsType(recordType) {
+	if recordType != "" && !caps.SupportsType(recordType) {
 		return fmt.Errorf("provider does not support %s records (advertises: %s)",
-			recordType, strings.Join(caps.Types, " "))
+			recordType, strings.Join(caps.RecordTypes, " "))
 	}
 	return nil
 }

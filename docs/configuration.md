@@ -195,7 +195,7 @@ Directives:
 | --- | --- |
 | `type dns` | Provider type. Required. |
 | `driver DRIVER` | DNS driver. Required. Supported values are `exec`, `manual`, `nsupdate`, `rfc2136`, `pdns`, and `powerdns`. |
-| `propagation provider|tool` | Whether the provider handles DNS propagation waiting. Default is `tool`. |
+| `propagation provider|tool` | Whether the provider handles DNS propagation waiting. Default is `tool`. The exec/gibdns driver requires `tool`. |
 | `secret NAME { ... }` | Secret for provider use. |
 | Other directives | Stored as driver-specific fields. |
 
@@ -224,53 +224,51 @@ provider manual {
 
 ### DNS driver `exec`
 
-Runs a custom command to present and clean up DNS-01 TXT records.
+Runs an external provider implementing the frozen `gibdns/draft-01`
+`exec-json` binding. This replaces the pre-v0.2 `DNSREC_*` environment
+protocol without a compatibility mode.
 
 ```scfg
 provider custom-dns {
   type dns
   driver exec
-  command /usr/local/libexec/gibcert-dns-hook
+  command /usr/local/libexec/example-gibdns --profile production
   zone example.com
+  api_url https://dns.example.net
 
-  secret api-token {
-    file /etc/gibcert/custom-dns-token
+  secret token {
+    file /etc/gibcert/example-dns-token
   }
 }
 ```
 
-If `command` is set, gibcert runs it as:
+`command` is the complete argument vector. gibcert executes it directly without
+a shell or an added method argument:
 
 ```text
-<command> present
-<command> cleanup
+/usr/local/libexec/example-gibdns --profile production
 ```
 
-Instead of `command`, you may set `present` and `cleanup` fields. Those are executed with the platform shell: `sh -c` on Unix-like systems, `cmd /C` on Windows, and `rc -c` on Plan 9.
+The provider reads one JSON request from stdin and writes one JSON response to
+stdout. Diagnostic output goes to stderr. `present`, `cleanup`, `add-record`,
+and `remove-record` configuration fields are rejected.
 
-The hook receives these environment variables:
+`zone` is the exact gibdns zone selector. Other provider fields are sent in
+`provider.config` under their exact, case-sensitive names. A field with one
+argument becomes a JSON string; multiple arguments become an array of strings.
 
-| Variable | Description |
-| --- | --- |
-| `DNSREC_PROTOCOL` | DNS record provider protocol version. Currently `1`. |
-| `DNSREC_OPERATION` | `present` or `cleanup` (also `add-record`/`remove-record` for persistent records). |
-| `DNSREC_RECORD_TYPE` | DNS record type. `TXT` for challenges. |
-| `DNSREC_RECORD_OWNER` | Record owner name with a trailing dot. |
-| `DNSREC_RECORD_RDATA` | Record rdata in canonical presentation format. |
-| `DNSREC_DOMAIN` | Base domain for the authorization. |
-| `DNSREC_IDENTIFIER` | Original ACME identifier, such as `*.example.com`. |
-| `DNSREC_TIMEOUT` | Propagation timeout in seconds. |
-| `DNSREC_FIELD_<NAME>` | Driver-specific provider fields except `command`, `present`, and `cleanup`. |
-| `DNSREC_SECRET_<NAME>_FILE` | Secret file path for `file` and `systemd-credential` secrets. |
-| `DNSREC_SECRET_<NAME>` | Secret value for `value`, `env`, and `command` secrets. |
+All secret sources are resolved by gibcert and sent as strings in
+`provider.secrets` through stdin. Secrets are omitted from capability requests
+and are not placed in the provider environment.
 
-Provider and secret names are uppercased, and `-` and `.` are converted to `_`.
-For exec providers, names that collide after this normalization are rejected.
+The provider must implement `capabilities` and `rrset.patch` for the required
+record types. It must either advertise concurrency-safe patching or support
+`rrset.get` with `if_revision` and `if_absent`; otherwise gibcert rejects it.
+Exec providers always use gibcert's propagation checker and cannot set
+`propagation provider`.
 
-The exec driver speaks the tool-neutral [DNS Record Provider
-Protocol](dns-record-protocol.md). See [External DNS
-Providers](exec-dns-providers.md) for gibcert's usage and implementation
-guidance.
+See [External DNS Providers](exec-dns-providers.md) for the complete gibcert
+binding, safety policy, and migration guidance.
 
 ### DNS drivers `rfc2136` and `nsupdate`
 
@@ -598,7 +596,7 @@ Directives:
 | `alias-fqdn FQDN` | `dns-01`, `dns-persist-01` | Place the TXT record at this exact FQDN instead of `_acme-challenge.<domain>`. Useful with acme-dns or a delegated alias zone. Mutually exclusive with `alias-domain`. |
 | `alias-domain DOMAIN` | `dns-01`, `dns-persist-01` | Place the TXT record at `_acme-challenge.<domain>.<alias-domain>`. Per-domain unique record, useful when one alias zone serves many domains. Mutually exclusive with `alias-fqdn`. |
 
-For DNS providers with `propagation provider`, gibcert assumes the provider waits for propagation. For `manual`, the operator controls the wait. For other DNS providers, gibcert waits until authoritative nameservers return the expected TXT record or the propagation timeout expires.
+For DNS providers with `propagation provider`, gibcert assumes the provider waits for propagation. This mode is not available to exec/gibdns providers. For `manual`, the operator controls the wait. For other DNS providers, gibcert waits until authoritative nameservers return the expected TXT record or the propagation timeout expires.
 
 ### Standalone listeners (`http-01` and `tls-alpn-01`)
 
@@ -760,7 +758,7 @@ If a DNS provider or network failure interrupts TLSA publishing after certificat
 
 ### Supported DNS drivers
 
-The `manual` driver does not implement persistent record edits and cannot be used as a TLSA provider. Use `exec`, `nsupdate`/`rfc2136`, or `powerdns`/`pdns`. See [External DNS Providers](exec-dns-providers.md) for the exec hook protocol covering both ACME challenge TXT records and persistent record edits like TLSA.
+The `manual` driver does not implement persistent record edits and cannot be used as a TLSA provider. Use `exec`, `nsupdate`/`rfc2136`, or `powerdns`/`pdns`. See [External DNS Providers](exec-dns-providers.md) for the gibdns exec binding covering both ACME challenge TXT records and persistent record edits like TLSA.
 
 ## Local CA Notes
 

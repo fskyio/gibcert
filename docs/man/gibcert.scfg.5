@@ -93,7 +93,8 @@ DNS driver. Supported values are manual, exec, nsupdate, rfc2136, pdns, and
 powerdns.
 .TP
 .B propagation provider|tool
-Whether the provider handles DNS propagation waiting. Default is tool.
+Whether the provider handles DNS propagation waiting. Default is tool. The
+exec driver requires tool because gibdns separates mutation from propagation.
 .TP
 .B secret \fINAME\fR { file \fIPATH\fR }
 Define a secret passed as a file path or read by the driver.
@@ -117,31 +118,29 @@ Other provider directives are stored as driver-specific fields.
 .SS manual
 The manual driver has no required fields.
 .SS exec
-The exec driver requires either:
+The exec driver implements the gibdns/draft-01 exec-json binding. It requires:
 .TP
-.B command \fIPATH\fR
-Run the command as "PATH present" and "PATH cleanup".
-.PP
-or:
+.B command \fIARGV...\fR
+Execute this argument vector directly for every request. No shell or
+protocol-specific argument is added.
 .TP
-.B present \fICOMMAND\fR
-Shell command used to present the TXT record.
-.TP
-.B cleanup \fICOMMAND\fR
-Shell command used to clean up the TXT record.
+.B zone \fINAME\fR
+Optional exact gibdns zone selector. It is required when the provider does not
+advertise zone discovery.
 .PP
-The hook is invoked with one of the operations present, cleanup,
-add-record, or remove-record. present and cleanup carry the ACME
-challenge TXT record; add-record and remove-record carry persistent
-records (e.g. TLSA) that gibcert manages on the certificate's behalf.
+The command reads one gibdns/draft-01 JSON request from standard input and
+writes one JSON response to standard output. Diagnostics go to standard error.
+The legacy present, cleanup, add-record, and remove-record fields are rejected.
 .PP
-The hook receives DNSREC_PROTOCOL, DNSREC_OPERATION,
-DNSREC_RECORD_TYPE, DNSREC_RECORD_OWNER, DNSREC_RECORD_RDATA, plus
-DNSREC_DOMAIN, DNSREC_IDENTIFIER, and DNSREC_TIMEOUT for challenge
-operations, DNSREC_RECORD_TTL for add-record, and DNSREC_FIELD_*,
-DNSREC_SECRET_*_FILE, and DNSREC_SECRET_* for provider configuration.
-Record rdata is always canonical presentation format; there are no
-per-type variables. The current DNS record provider protocol version is 1.
+Other fields become case-sensitive provider.config members. One argument is a
+JSON string and multiple arguments are an array of strings. gibcert resolves
+all configured secret sources and sends their values in provider.secrets on
+standard input; capability requests omit secrets. No DNSREC environment
+variables are exported.
+.PP
+The provider must implement capabilities and rrset.patch. It must advertise
+concurrent-safe patching or provide rrset.get with if_revision and if_absent.
+The exec driver always uses gibcert's authoritative propagation check.
 .SS rfc2136 and nsupdate
 Fields are:
 .TP

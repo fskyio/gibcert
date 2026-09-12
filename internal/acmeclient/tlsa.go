@@ -187,7 +187,7 @@ func reconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 	if err != nil {
 		return nil, err
 	}
-	if err := challenge.EnsureEditorSupports(ctx, editor, "TLSA", "add-record", "remove-record"); err != nil {
+	if err := challenge.EnsureEditorSupports(ctx, editor, "TLSA", "rrset.patch"); err != nil {
 		return nil, fmt.Errorf("tlsa: provider %q: %w", spec.Provider, err)
 	}
 

@@ -1,13 +1,8 @@
-# ACME DNS-01 example using a custom hook.
+# ACME DNS-01 example using a gibdns provider.
 #
-# gibcert calls the command as:
-#   /usr/local/libexec/gibcert-dns-hook present
-#   /usr/local/libexec/gibcert-dns-hook cleanup
-#
-# The hook receives DNSREC_OPERATION, DNSREC_RECORD_TYPE,
-# DNSREC_RECORD_OWNER, DNSREC_RECORD_RDATA, DNSREC_DOMAIN,
-# DNSREC_IDENTIFIER, DNSREC_TIMEOUT, DNSREC_FIELD_*, and DNSREC_SECRET_*
-# environment variables. See docs/dns-record-protocol.md.
+# gibcert executes the configured argv without a shell or method argument. The
+# provider reads one gibdns JSON request from stdin and writes one response to
+# stdout. See docs/exec-dns-providers.md.
 
 account letsencrypt {
 	ca letsencrypt
@@ -17,8 +12,9 @@ account letsencrypt {
 provider custom-dns {
 	type dns
 	driver exec
-	command /usr/local/libexec/gibcert-dns-hook
+	command /usr/local/libexec/example-gibdns --profile production
 	zone example.com
+	api_url https://dns.example.net
 
 	secret token {
 		file /etc/gibcert/custom-dns-token

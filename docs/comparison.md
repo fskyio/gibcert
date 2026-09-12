@@ -96,7 +96,7 @@ provider APIs differ, credentials need careful scoping, propagation behavior
 varies, and challenge records may share owners.
 
 gibcert includes built-in providers for manual DNS, RFC 2136/nsupdate, and
-PowerDNS. For other providers, it uses an external DNS record provider protocol
+PowerDNS. For other providers, it uses the gibdns external provider protocol
 instead of embedding every DNS API into the main program.
 
 That model is useful when you want provider integrations to be small,
