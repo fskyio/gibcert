@@ -88,6 +88,8 @@ nfpms:
         dst: /usr/share/doc/gibcert/examples/dns-powerdns.scfg
       - src: contrib/examples/dns-exec.scfg
         dst: /usr/share/doc/gibcert/examples/dns-exec.scfg
+      - src: contrib/examples/dns-cloudflare.scfg
+        dst: /usr/share/doc/gibcert/examples/dns-cloudflare.scfg
       - src: contrib/examples/local-ca.scfg
         dst: /usr/share/doc/gibcert/examples/local-ca.scfg
       - src: contrib/systemd/gibcert.service

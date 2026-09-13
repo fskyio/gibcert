@@ -118,7 +118,10 @@ Other provider directives are stored as driver-specific fields.
 .SS manual
 The manual driver has no required fields.
 .SS exec
-The exec driver implements the gibdns/draft-01 exec-json binding. It requires:
+The exec driver implements the gibdns/draft-01 exec-json binding. Official
+providers (Cloudflare, deSEC, Gcore) are listed in the gibdns catalog at
+https://foundry.fsky.io/gibdns/gibdns . Install the provider binary and set
+command to its path. Required fields:
 .TP
 .B command \fIARGV...\fR
 Execute this argument vector directly for every request. No shell or

@@ -1,12 +1,93 @@
 # External DNS Providers
 
-gibcert delegates DNS changes to external programs through the `exec` DNS
-driver. The driver implements the frozen
-[`gibdns/draft-01`](https://foundry.fsky.io/gibdns/gibdns) protocol using its
-`exec-json` binding.
+gibcert does not embed every DNS API. Built-in drivers cover manual DNS, RFC
+2136/nsupdate, and PowerDNS. For other services, install a
+[gibdns](https://foundry.fsky.io/gibdns/gibdns) provider binary and point the
+`exec` driver at it.
 
+The `exec` driver implements the frozen
+[`gibdns/draft-01`](https://foundry.fsky.io/gibdns/gibdns) `exec-json` binding.
 The older `DNSREC_*` environment protocol is not supported. Starting with
 gibcert v0.2, an exec provider must implement `gibdns/draft-01`.
+
+If you only need to issue certificates with Cloudflare, deSEC, or Gcore, use
+the operator steps below. Binding details for custom providers follow after
+that.
+
+## Official providers
+
+Install one of these programs next to gibcert, then set `command` to its path.
+
+| Provider | Service | Binary | TXT | TLSA | Install |
+| --- | --- | --- | --- | --- | --- |
+| [gibdns-cloudflare](https://foundry.fsky.io/gibdns/gibdns-cloudflare) | Cloudflare DNS | `gibdns-cloudflare` | yes | yes | [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) |
+| [gibdns-desec](https://foundry.fsky.io/gibdns/gibdns-desec) | deSEC | `gibdns-desec` | yes | yes | [releases](https://foundry.fsky.io/gibdns/gibdns-desec/releases) |
+| [gibdns-gcore](https://foundry.fsky.io/gibdns/gibdns-gcore) | Gcore DNS | `gibdns-gcore` | yes | no | [releases](https://foundry.fsky.io/gibdns/gibdns-gcore/releases) |
+
+The live catalog is [gibdns PROVIDERS.md](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
+Operator setup that is not gibcert-specific is in
+[Using gibdns](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/USING.md).
+
+Debian packages install the binary to `/usr/bin`. From source, the default is
+`/usr/local/bin`:
+
+```sh
+make install PREFIX=/usr/local
+```
+
+The provider is not an interactive CLI. Confirm it is on disk (`command -v
+gibdns-cloudflare`), then let gibcert invoke it. Use an absolute path in
+`command` when the process `PATH` is narrow, such as the shipped systemd unit.
+
+## Install and configure (Cloudflare)
+
+1. Install `gibdns-cloudflare` from its
+   [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) or
+   with `make install PREFIX=/usr/local`.
+2. Create a scoped Cloudflare API token with `Zone.DNS:Write` on the zone.
+   Store it at `/etc/gibcert/cloudflare-token` with mode `0600`.
+3. Declare the provider and certificate:
+
+```scfg
+provider cloudflare {
+  type dns
+  driver exec
+  command /usr/local/bin/gibdns-cloudflare
+  zone example.com.
+
+  secret api_token {
+    file /etc/gibcert/cloudflare-token
+  }
+}
+
+certificate wildcard-example.com {
+  account letsencrypt
+  names example.com *.example.com
+
+  challenge dns-01 {
+    provider cloudflare
+    propagation-timeout 120s
+  }
+
+  deploy app {
+    fullchain /etc/app/tls/example.com/fullchain.pem
+    key /etc/app/tls/example.com/privkey.pem
+  }
+}
+```
+
+4. Run `gibcert check`, then `gibcert plan`, then `gibcert apply`.
+
+Secret names come from the provider README, not from gibcert. Cloudflare uses
+`api_token`, deSEC uses `token`, and Gcore uses `api_key`. Copy the rest of
+the block from that provider's README. A complete Cloudflare example is in
+`contrib/examples/dns-cloudflare.scfg`.
+
+`zone` is optional when the provider advertises `features.zone_discovery`
+(the official providers do). Set it when you want an exact zone selector.
+
+Gcore cannot publish TLSA. Use Cloudflare, deSEC, RFC 2136, or PowerDNS for
+automatic DANE.
 
 ## Provider configuration
 
@@ -14,7 +95,7 @@ gibcert v0.2, an exec provider must implement `gibdns/draft-01`.
 provider custom-dns {
   type dns
   driver exec
-  command /usr/local/libexec/example-gibdns --profile production
+  command /usr/local/bin/example-gibdns --profile production
   zone example.com
   api_url https://dns.example.net
 
@@ -29,12 +110,13 @@ and without adding a protocol-specific argument. In the example above the
 exact command is:
 
 ```text
-/usr/local/libexec/example-gibdns --profile production
+/usr/local/bin/example-gibdns --profile production
 ```
 
-The same command handles `capabilities`, `rrset.get`, and `rrset.patch` by
-reading the request method from standard input. The legacy operation-specific
-`present`, `cleanup`, `add-record`, and `remove-record` fields are rejected.
+If the first argument has no slash, it is looked up on `PATH`. The same
+command handles `capabilities`, `rrset.get`, and `rrset.patch` by reading the
+request method from standard input. The legacy operation-specific `present`,
+`cleanup`, `add-record`, and `remove-record` fields are rejected.
 
 `zone`, when present, becomes the exact `params.zone` selector in RRset
 requests. It is not sent as provider-specific configuration. Leave it out only
@@ -170,25 +252,6 @@ For DNS-01, gibcert performs its existing authoritative propagation check after
 the patch succeeds. Exec providers cannot use `propagation provider`. Set the
 challenge's `propagation-timeout` to `0s` only when deliberately skipping the
 check, such as with an ACME test server that does not query DNS.
-
-## Example certificate
-
-```scfg
-certificate wildcard-example.com {
-  ca letsencrypt
-  names example.com *.example.com
-
-  challenge dns-01 {
-    provider custom-dns
-    propagation-timeout 120s
-  }
-
-  deploy app {
-    fullchain /etc/app/tls/example.com/fullchain.pem
-    key /etc/app/tls/example.com/privkey.pem
-  }
-}
-```
 
 ## Migration from the pre-v0.2 exec protocol
 

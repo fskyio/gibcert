@@ -99,15 +99,20 @@ gibcert includes built-in providers for manual DNS, RFC 2136/nsupdate, and
 PowerDNS. For other providers, it uses the gibdns external provider protocol
 instead of embedding every DNS API into the main program.
 
+Official gibdns providers currently cover Cloudflare, deSEC, and Gcore. Install
+the provider binary and point the `exec` driver's `command` at it. See
+[External DNS Providers](exec-dns-providers.md) and the
+[gibdns catalog](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
+
 That model is useful when you want provider integrations to be small,
 separable, and testable outside of gibcert. It also lets the same provider
 program handle both ACME challenge TXT records and persistent records such as
 TLSA.
 
-The tradeoff is that some users will need to provide or write a small adapter
-program for their DNS provider. If another ACME client already has a maintained
-built-in plugin for your provider and your deployment needs are simple, that may
-be more convenient.
+The tradeoff is that a DNS service without an official or community gibdns
+provider needs a small adapter program. If another ACME client already has a
+maintained built-in plugin for your provider and your deployment needs are
+simple, that may be more convenient.
 
 ## Private PKI And Local CAs
 

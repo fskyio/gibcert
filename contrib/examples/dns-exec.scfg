@@ -1,8 +1,11 @@
-# ACME DNS-01 example using a gibdns provider.
+# ACME DNS-01 example using a custom gibdns provider.
+#
+# Official providers (Cloudflare, deSEC, Gcore) are listed in
+# docs/exec-dns-providers.md. Use this file when you ship your own binary.
 #
 # gibcert executes the configured argv without a shell or method argument. The
 # provider reads one gibdns JSON request from stdin and writes one response to
-# stdout. See docs/exec-dns-providers.md.
+# stdout.
 
 account letsencrypt {
 	ca letsencrypt
@@ -12,7 +15,7 @@ account letsencrypt {
 provider custom-dns {
 	type dns
 	driver exec
-	command /usr/local/libexec/example-gibdns --profile production
+	command /usr/local/bin/example-gibdns --profile production
 	zone example.com
 	api_url https://dns.example.net
 

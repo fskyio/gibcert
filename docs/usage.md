@@ -91,6 +91,61 @@ http://example.com/.well-known/acme-challenge/
 
 from the configured `webroot`.
 
+## DNS-01 With An External Provider
+
+HTTP-01 needs a web server that can serve the challenge files. DNS-01 is the
+usual path for wildcards and for hosts that cannot serve `/.well-known`.
+gibcert includes RFC 2136/nsupdate and PowerDNS. For other DNS services,
+install a [gibdns](https://foundry.fsky.io/gibdns/gibdns) provider binary and
+use the `exec` driver.
+
+Official providers and install links are in
+[External DNS Providers](exec-dns-providers.md). Cloudflare, for example:
+
+1. Install `gibdns-cloudflare` from its
+   [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) or
+   with `make install PREFIX=/usr/local`.
+2. Store a scoped API token with `Zone.DNS:Write` at
+   `/etc/gibcert/cloudflare-token` (mode `0600`).
+3. Add a provider and certificate:
+
+```scfg
+provider cloudflare {
+  type dns
+  driver exec
+  command /usr/local/bin/gibdns-cloudflare
+  zone example.com.
+
+  secret api_token {
+    file /etc/gibcert/cloudflare-token
+  }
+}
+
+certificate wildcard-example.com {
+  account letsencrypt
+  names example.com *.example.com
+
+  challenge dns-01 {
+    provider cloudflare
+    propagation-timeout 120s
+  }
+
+  deploy nginx {
+    fullchain /etc/nginx/tls/example.com/fullchain.pem
+    key /etc/nginx/tls/example.com/privkey.pem
+    owner root
+    group www-data
+    mode 0640
+    after "systemctl reload nginx"
+  }
+}
+```
+
+Then continue with `gibcert check`, `gibcert plan`, and `gibcert apply` as
+below. A complete copy of this example is `contrib/examples/dns-cloudflare.scfg`.
+deSEC and Gcore follow the same shape with different binary and secret names;
+Gcore cannot publish TLSA.
+
 ## Check And Preview
 
 Validate syntax, references, deploy paths, root-only ownership settings, and HTTP-01 webroot writability:

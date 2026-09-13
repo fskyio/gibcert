@@ -228,11 +228,30 @@ Runs an external provider implementing the frozen `gibdns/draft-01`
 `exec-json` binding. This replaces the pre-v0.2 `DNSREC_*` environment
 protocol without a compatibility mode.
 
+Official providers (Cloudflare, deSEC, Gcore) are listed in
+[External DNS Providers](exec-dns-providers.md). Install the binary, then set
+`command` to its path. Secret names come from the provider README.
+
+```scfg
+provider cloudflare {
+  type dns
+  driver exec
+  command /usr/local/bin/gibdns-cloudflare
+  zone example.com.
+
+  secret api_token {
+    file /etc/gibcert/cloudflare-token
+  }
+}
+```
+
+A custom provider uses the same shape:
+
 ```scfg
 provider custom-dns {
   type dns
   driver exec
-  command /usr/local/libexec/example-gibdns --profile production
+  command /usr/local/bin/example-gibdns --profile production
   zone example.com
   api_url https://dns.example.net
 
@@ -243,19 +262,21 @@ provider custom-dns {
 ```
 
 `command` is the complete argument vector. gibcert executes it directly without
-a shell or an added method argument:
+a shell or an added method argument. If the first argument has no slash, it is
+looked up on `PATH`:
 
 ```text
-/usr/local/libexec/example-gibdns --profile production
+/usr/local/bin/gibdns-cloudflare
 ```
 
 The provider reads one JSON request from stdin and writes one JSON response to
 stdout. Diagnostic output goes to stderr. `present`, `cleanup`, `add-record`,
 and `remove-record` configuration fields are rejected.
 
-`zone` is the exact gibdns zone selector. Other provider fields are sent in
-`provider.config` under their exact, case-sensitive names. A field with one
-argument becomes a JSON string; multiple arguments become an array of strings.
+`zone` is the exact gibdns zone selector. It is optional when the provider
+advertises zone discovery. Other provider fields are sent in `provider.config`
+under their exact, case-sensitive names. A field with one argument becomes a
+JSON string; multiple arguments become an array of strings.
 
 All secret sources are resolved by gibcert and sent as strings in
 `provider.secrets` through stdin. Secrets are omitted from capability requests

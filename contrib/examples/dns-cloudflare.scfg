@@ -1,0 +1,48 @@
+# ACME DNS-01 example using the official gibdns Cloudflare provider.
+#
+# Install gibdns-cloudflare from
+# https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases
+# or `make install PREFIX=/usr/local`, then store a scoped API token with
+# Zone.DNS:Write at /etc/gibcert/cloudflare-token (mode 0600).
+#
+# Debian packages install the binary to /usr/bin/gibdns-cloudflare.
+# See docs/exec-dns-providers.md.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+provider cloudflare {
+	type dns
+	driver exec
+	command /usr/local/bin/gibdns-cloudflare
+	zone example.com.
+
+	secret api_token {
+		file /etc/gibcert/cloudflare-token
+	}
+}
+
+certificate wildcard-example.com {
+	account letsencrypt
+	names example.com *.example.com
+
+	challenge dns-01 {
+		provider cloudflare
+		propagation-timeout 120s
+	}
+
+	renew {
+		before-expiry 30d
+	}
+
+	deploy app {
+		fullchain /etc/app/tls/example.com/fullchain.pem
+		key /etc/app/tls/example.com/privkey.pem
+		owner root
+		group app
+		mode 0640
+		after "systemctl reload app"
+	}
+}
