@@ -5,7 +5,8 @@
 # or `make install PREFIX=/usr/local`, then store a scoped API token with
 # Zone.DNS:Write at /etc/gibcert/cloudflare-token (mode 0600).
 #
-# Debian packages install the binary to /usr/bin/gibdns-cloudflare.
+# Debian packages install the binary to /usr/libexec/gibdns/gibdns-cloudflare.
+# For source or tarball installs, use /usr/local/libexec/gibdns/gibdns-cloudflare.
 # See docs/exec-dns-providers.md.
 
 account letsencrypt {
@@ -16,7 +17,7 @@ account letsencrypt {
 provider cloudflare {
 	type dns
 	driver exec
-	command /usr/local/bin/gibdns-cloudflare
+	command /usr/libexec/gibdns/gibdns-cloudflare
 	zone example.com.
 
 	secret api_token {

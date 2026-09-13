@@ -113,7 +113,7 @@ Official providers and install links are in
 provider cloudflare {
   type dns
   driver exec
-  command /usr/local/bin/gibdns-cloudflare
+  command /usr/libexec/gibdns/gibdns-cloudflare
   zone example.com.
 
   secret api_token {

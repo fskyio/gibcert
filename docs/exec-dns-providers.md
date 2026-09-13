@@ -28,16 +28,18 @@ The live catalog is [gibdns PROVIDERS.md](https://foundry.fsky.io/gibdns/gibdns/
 Operator setup that is not gibcert-specific is in
 [Using gibdns](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/USING.md).
 
-Debian packages install the binary to `/usr/bin`. From source, the default is
-`/usr/local/bin`:
+Debian packages install providers to `/usr/libexec/gibdns`. From source, the
+default is `/usr/local/libexec/gibdns`:
 
 ```sh
 make install PREFIX=/usr/local
 ```
 
-The provider is not an interactive CLI. Confirm it is on disk (`command -v
-gibdns-cloudflare`), then let gibcert invoke it. Use an absolute path in
-`command` when the process `PATH` is narrow, such as the shipped systemd unit.
+The provider is not an interactive CLI and is intentionally not installed on
+`PATH`. Confirm a Debian installation with `test -x
+/usr/libexec/gibdns/gibdns-cloudflare`, then let gibcert invoke it. Use an
+absolute path in `command`; source installs use
+`/usr/local/libexec/gibdns/gibdns-cloudflare` instead.
 
 ## Install and configure (Cloudflare)
 
@@ -52,7 +54,7 @@ gibdns-cloudflare`), then let gibcert invoke it. Use an absolute path in
 provider cloudflare {
   type dns
   driver exec
-  command /usr/local/bin/gibdns-cloudflare
+  command /usr/libexec/gibdns/gibdns-cloudflare
   zone example.com.
 
   secret api_token {

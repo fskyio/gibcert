@@ -236,7 +236,7 @@ Official providers (Cloudflare, deSEC, Gcore) are listed in
 provider cloudflare {
   type dns
   driver exec
-  command /usr/local/bin/gibdns-cloudflare
+  command /usr/libexec/gibdns/gibdns-cloudflare
   zone example.com.
 
   secret api_token {
@@ -266,7 +266,7 @@ a shell or an added method argument. If the first argument has no slash, it is
 looked up on `PATH`:
 
 ```text
-/usr/local/bin/gibdns-cloudflare
+/usr/libexec/gibdns/gibdns-cloudflare
 ```
 
 The provider reads one JSON request from stdin and writes one JSON response to
