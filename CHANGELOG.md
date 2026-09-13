@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Document official gibdns providers (Cloudflare, deSEC, Gcore) and how to
-  install them with the exec driver.
-
 ## [0.2.0] - 2026-09-13
 
 ### Added
@@ -25,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DNS exec providers now speak `gibdns/draft-01` over stdin/stdout JSON. There
   is no compatibility mode for the pre-v0.2 `DNSREC_*` environment protocol.
 - The example systemd service no longer sets `UMask=0077`.
+- Document official gibdns providers (Cloudflare, deSEC, Gcore) and how to
+  install them with the exec driver.
 
 ### Removed
 
