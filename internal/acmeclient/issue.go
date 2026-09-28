@@ -135,7 +135,11 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	if profile != "" {
 		fmt.Fprintf(out, "  requesting profile: %s\n", profile)
 	}
-	replaces := ariReplaces(store, cert.Name, out)
+	accountName := opts.AccountName
+	if accountName == "" {
+		accountName = cert.Account
+	}
+	replaces := ariReplaces(store, cert.Name, accountName, c.DirectoryURL(), out)
 	order, err := c.newOrder(ctx, acme.Order{Identifiers: ids, Profile: profile, Replaces: replaces})
 	if err != nil {
 		return fmt.Errorf("authorize order: %w", err)
@@ -406,7 +410,7 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	}
 	meta := storage.CertMeta{
 		Name:         cert.Name,
-		Account:      cert.Account,
+		Account:      accountName,
 		CA:           opts.CAName,
 		IssuerType:   "acme",
 		Directory:    c.DirectoryURL(),
@@ -419,9 +423,6 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	if existing, err := store.LoadCertMeta(cert.Name); err == nil {
 		meta.Deploys = existing.Deploys
 		meta.TLSA = existing.TLSA
-	}
-	if opts.AccountName != "" {
-		meta.Account = opts.AccountName
 	}
 
 	if cert.TLSA != nil {
@@ -599,12 +600,17 @@ func (c *Client) newOrder(ctx context.Context, order acme.Order) (acme.Order, er
 	return o, err
 }
 
-// ariReplaces returns the ACME Renewal Information unique identifier (RFC 9773
-// §4.1) of the certificate currently stored under name, for use as a new
-// order's "replaces" field on renewal. It is best-effort: a first issuance (no
-// stored certificate), an unparseable certificate, or one without an Authority
-// Key Identifier yields "" so the order is sent without the hint.
-func ariReplaces(store *storage.Store, name string, out io.Writer) string {
+// ariReplaces returns the ARI identifier of the stored certificate only when
+// its metadata ties that exact leaf to the account and directory issuing this
+// order. Imported certificates and certificates from a different issuer cannot
+// be claimed as replacements by the current account. If provenance or the
+// certificate is missing, the new order is sent without the hint.
+func ariReplaces(store *storage.Store, name, accountName, directory string, out io.Writer) string {
+	meta, err := store.LoadCertMeta(name)
+	if err != nil || meta.IssuerType != "acme" || meta.Account == "" ||
+		meta.Account != accountName || meta.Directory != directory {
+		return ""
+	}
 	raw, err := os.ReadFile(store.CertPaths(name).Cert)
 	if err != nil {
 		return ""
@@ -614,7 +620,7 @@ func ariReplaces(store *storage.Store, name string, out io.Writer) string {
 		return ""
 	}
 	leaf, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || len(leaf.AuthorityKeyId) == 0 {
+	if err != nil || len(leaf.AuthorityKeyId) == 0 || meta.SerialNumber != leaf.SerialNumber.String() {
 		return ""
 	}
 	id, err := acme.ARIUniqueIdentifier(leaf)

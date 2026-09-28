@@ -309,7 +309,7 @@ func TestARIReplaces(t *testing.T) {
 	store := storage.New(t.TempDir())
 
 	// No stored certificate (first issuance) yields no replaces hint.
-	if got := ariReplaces(store, "example.com", io.Discard); got != "" {
+	if got := ariReplaces(store, "example.com", "default", "https://ca.example/directory", io.Discard); got != "" {
 		t.Errorf("ariReplaces with no cert: got %q, want empty", got)
 	}
 
@@ -348,8 +348,36 @@ func TestARIReplaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ariReplaces(store, "example.com", io.Discard); got != want {
-		t.Errorf("ariReplaces: got %q, want %q", got, want)
+	const directory = "https://ca.example/directory"
+	if got := ariReplaces(store, "example.com", "default", directory, io.Discard); got != "" {
+		t.Errorf("ariReplaces without metadata: got %q, want empty", got)
+	}
+	tests := []struct {
+		name string
+		meta storage.CertMeta
+		want string
+	}{
+		{"imported", storage.CertMeta{IssuerType: "imported", Directory: directory, SerialNumber: leaf.SerialNumber.String()}, ""},
+		{"unknown issuer", storage.CertMeta{Account: "default", Directory: directory, SerialNumber: leaf.SerialNumber.String()}, ""},
+		{"different account", storage.CertMeta{IssuerType: "acme", Account: "other", Directory: directory, SerialNumber: leaf.SerialNumber.String()}, ""},
+		{"different directory", storage.CertMeta{IssuerType: "acme", Account: "default", Directory: "https://other.example/directory", SerialNumber: leaf.SerialNumber.String()}, ""},
+		{"different leaf", storage.CertMeta{IssuerType: "acme", Account: "default", Directory: directory, SerialNumber: "123"}, ""},
+		{"same issuer and leaf", storage.CertMeta{IssuerType: "acme", Account: "default", Directory: directory, SerialNumber: leaf.SerialNumber.String()}, want},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.SaveCertMeta("example.com", tc.meta); err != nil {
+				t.Fatal(err)
+			}
+			var out strings.Builder
+			got := ariReplaces(store, "example.com", "default", directory, &out)
+			if got != tc.want {
+				t.Errorf("ariReplaces: got %q, want %q", got, tc.want)
+			}
+			if printed := strings.Contains(out.String(), "replacing the existing certificate"); printed != (tc.want != "") {
+				t.Errorf("replacement message for %q: %q", got, out.String())
+			}
+		})
 	}
 }
 

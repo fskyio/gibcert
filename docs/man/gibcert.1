@@ -152,6 +152,13 @@ Import explicit PEM certificate material. gibcert derives names, serial
 number, validity, and expiry from the leaf certificate. Renewal configuration,
 ACME account settings, challenges, and deploy targets still come from the
 configuration file.
+.PP
+For all import methods, the first ACME renewal uses the configured account
+without an ARI \fBreplaces\fR hint: imported metadata does not identify
+the account that obtained the original certificate.
+It is subject to normal CA authorization and rate limits. Later orders
+include the hint when gibcert issued the stored certificate with the same
+account and directory.
 .SH REVOCATION REASONS
 Supported revocation reasons are unspecified, key-compromise, ca-compromise,
 affiliation-changed, superseded, cessation-of-operation, certificate-hold,

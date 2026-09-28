@@ -335,7 +335,7 @@ Or import separate leaf and chain files:
 gibcert import pem --name example.com --cert cert.pem --chain chain.pem --key privkey.pem
 ```
 
-After importing, add a matching `certificate` block to the config and run `gibcert check`. Future issuance and renewal behavior comes from the config, not from imported metadata.
+After importing, add a matching `certificate` block to the config and run `gibcert check`. Issuance and renewal use the configured ACME account and challenge settings. The first renewal of an imported certificate omits the ARI `replaces` hint: the imported material does not establish that this account obtained the original certificate, and some CAs reject the hint from another account. The renewal still uses a normal ACME order, subject to the CA's usual authorization and rate limits. After gibcert issues a certificate, it sends `replaces` on subsequent orders when the stored leaf, account, and directory match.
 
 ## Hooks
 

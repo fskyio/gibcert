@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `apply` no longer prints a deploy target's "up to date" status for every
   unchanged certificate while another certificate has pending work or fails.
+- ACME renewal no longer claims an imported certificate as an ARI replacement
+  when the current account did not issue it.
 
 ## [0.2.0] - 2026-09-13
 
