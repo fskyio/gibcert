@@ -46,7 +46,10 @@ Show what apply would change.
 .B apply [\fB\-\-yes\fR]
 Reconcile state and deployed files with the config. Prints a plan, confirms
 externally visible ACME actions unless \fB\-\-yes\fR is set, issues or renews
-due certificates, then deploys configured material.
+due certificates, then deploys configured material. On a nonempty plan, a
+failed renewal does not prevent unrelated certificates from being processed.
+Only deploy targets with changed file content are reported; unchanged targets
+are reconciled without a status line.
 .TP
 .B issue [\fB\-\-new\-key\fR] \fICERTIFICATE\fR
 Issue one configured certificate. \fB\-\-new\-key\fR forces certificate key

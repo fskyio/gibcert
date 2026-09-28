@@ -106,6 +106,66 @@ func TestCheckPlanListShowAndCACommands(t *testing.T) {
 	}
 }
 
+func TestApplyDoesNotReportUnchangedDeploysOnIssuanceFailure(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gibcert.scfg")
+	deployDir := filepath.Join(dir, "deployed")
+	cfg := fmt.Sprintf(`
+ca dev {
+  type local
+}
+group web {
+  ca dev
+  deploy angie {
+    fullchain %s/{cert}/fullchain.pem
+    key %s/{cert}/key.pem
+  }
+}
+certificate first.example {
+  groups web
+  names first.example
+}
+certificate failing.example {
+  groups web
+  names failing.example
+  key {
+    type ecdsa
+    curve p256
+    reuse
+  }
+  renew {
+    before-expiry 100d
+  }
+}
+certificate last.example {
+  groups web
+  names last.example
+}
+`, deployDir, deployDir)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &paths.Paths{Config: cfgPath, State: filepath.Join(dir, "state")}
+	if out, errOut, code := captureCommand(t, func() int { return cmdApply(p, []string{"--yes"}) }); code != 0 {
+		t.Fatalf("initial apply got code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+
+	store := storage.New(p.State)
+	if err := os.WriteFile(store.CertPaths("failing.example").Key, []byte("invalid key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := captureCommand(t, func() int { return cmdApply(p, []string{"--yes"}) })
+	if code != 1 || !strings.Contains(errOut, "read existing cert key") {
+		t.Fatalf("failed apply got code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if !strings.Contains(out, "certificate failing.example: resign") {
+		t.Fatalf("expected pending re-signing, got stdout=%q", out)
+	}
+	if strings.Contains(out, "angie: up to date") {
+		t.Fatalf("unchanged targets reported during failed apply: %q", out)
+	}
+}
+
 func TestStorageOnlyListShowRenameDeleteCommands(t *testing.T) {
 	p := &paths.Paths{
 		Config: filepath.Join(t.TempDir(), "missing.scfg"),

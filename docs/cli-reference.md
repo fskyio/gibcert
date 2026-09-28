@@ -50,6 +50,8 @@ Reconcile local state and deployed files with the config.
 
 `apply` computes and prints a plan, asks for confirmation when ACME account or certificate actions are required, issues or renews due certificates, then deploys all configured certificate material.
 
+When a plan is nonempty, `apply` still reconciles every configured certificate; a failed renewal does not prevent unrelated certificates from being processed. It reports deploy targets only when their file content changed; unchanged targets are not listed.
+
 | Flag | Description |
 | --- | --- |
 | `--yes` | Approve externally visible actions non-interactively. Required when confirmation is needed and stdin is not a TTY. |

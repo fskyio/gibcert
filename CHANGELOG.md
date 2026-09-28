@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `apply` no longer prints a deploy target's "up to date" status for every
+  unchanged certificate while another certificate has pending work or fails.
+
 ## [0.2.0] - 2026-09-13
 
 ### Added

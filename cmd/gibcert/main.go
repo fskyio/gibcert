@@ -1106,9 +1106,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 			continue
 		}
 		for _, r := range results {
-			if len(r.Changed) == 0 {
-				fmt.Printf("  %s: up to date\n", r.Target)
-			} else {
+			if len(r.Changed) > 0 {
 				fmt.Printf("  %s: updated %v\n", r.Target, r.Changed)
 			}
 		}
