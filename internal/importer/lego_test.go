@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 func writeLegoDir(t *testing.T, certsDir, baseName string, fc fakeCert, withIssuer bool) {

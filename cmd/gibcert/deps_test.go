@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 // simulateRun walks certs in dependency order, calling process for each cert

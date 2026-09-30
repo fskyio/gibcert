@@ -20,7 +20,7 @@ import (
 	"net"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/acme"
+	"gitfield.org/fsky/gibcert/internal/acme"
 )
 
 func TestTLSALPN01StandaloneHandshake(t *testing.T) {

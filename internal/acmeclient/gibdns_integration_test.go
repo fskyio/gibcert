@@ -24,8 +24,8 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/challenge"
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/challenge"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 type pebbleGibDNSRequest struct {

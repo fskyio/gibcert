@@ -25,13 +25,13 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/importer"
-	"foundry.fsky.io/fsky/gibcert/internal/logging"
-	"foundry.fsky.io/fsky/gibcert/internal/paths"
-	"foundry.fsky.io/fsky/gibcert/internal/plan"
-	"foundry.fsky.io/fsky/gibcert/internal/renew"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/importer"
+	"gitfield.org/fsky/gibcert/internal/logging"
+	"gitfield.org/fsky/gibcert/internal/paths"
+	"gitfield.org/fsky/gibcert/internal/plan"
+	"gitfield.org/fsky/gibcert/internal/renew"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 func TestHelpVersionAndSubcommandUsage(t *testing.T) {

@@ -22,7 +22,7 @@ import (
 	"os"
 	"runtime"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func plannedOwnerGroupChangesForOS(_ os.FileInfo, _ string, d *config.Deploy) ([]string, error) {

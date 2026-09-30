@@ -96,14 +96,14 @@ from the configured `webroot`.
 HTTP-01 needs a web server that can serve the challenge files. DNS-01 is the
 usual path for wildcards and for hosts that cannot serve `/.well-known`.
 gibcert includes RFC 2136/nsupdate and PowerDNS. For other DNS services,
-install a [gibdns](https://foundry.fsky.io/gibdns/gibdns) provider binary and
+install a [gibdns](https://gitfield.org/gibdns/gibdns) provider binary and
 use the `exec` driver.
 
 Official providers and install links are in
 [External DNS Providers](exec-dns-providers.md). Cloudflare, for example:
 
 1. Install `gibdns-cloudflare` from its
-   [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) or
+   [releases](https://gitfield.org/gibdns/gibdns-cloudflare/releases) or
    with `make install PREFIX=/usr/local`.
 2. Store a scoped API token with `Zone.DNS:Write` at
    `/etc/gibcert/cloudflare-token` (mode `0600`).

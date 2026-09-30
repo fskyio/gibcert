@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 // reservePort binds an ephemeral port on loopback, closes it, and returns the

@@ -1,6 +1,6 @@
 [Unit]
 Description=Renew and deploy gibcert certificates daily
-Documentation=https://foundry.fsky.io/fsky/gibcert
+Documentation=https://gitfield.org/fsky/gibcert
 
 [Timer]
 OnCalendar=*-*-* 03:17:00

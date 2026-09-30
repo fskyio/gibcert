@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 type CertbotOptions struct {

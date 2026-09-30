@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func acct(name string) *config.Account { return &config.Account{Name: name} }

@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 type UndeployResult struct {

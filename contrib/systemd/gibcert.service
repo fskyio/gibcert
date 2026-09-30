@@ -1,6 +1,6 @@
 [Unit]
 Description=Renew and deploy gibcert certificates
-Documentation=https://foundry.fsky.io/fsky/gibcert
+Documentation=https://gitfield.org/fsky/gibcert
 Wants=network-online.target
 After=network-online.target
 

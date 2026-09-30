@@ -1,4 +1,4 @@
-module foundry.fsky.io/fsky/gibcert
+module gitfield.org/fsky/gibcert
 
 go 1.26.3
 

@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Frozen [`gibdns/draft-01`](https://foundry.fsky.io/gibdns/gibdns) exec-json
+- Frozen [`gibdns/draft-01`](https://gitfield.org/gibdns/gibdns) exec-json
   binding for DNS exec providers, with shared-RRset-safe ACME TXT and
   persistent TLSA edits.
 
@@ -65,6 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exec DNS protocol for generic persistent record edits (TLSA, ECH, and future
   DNS-managed material).
 
-[unreleased]: https://foundry.fsky.io/fsky/gibcert/compare/v0.2.0...HEAD
-[0.2.0]: https://foundry.fsky.io/fsky/gibcert/compare/v0.1.0...v0.2.0
-[0.1.0]: https://foundry.fsky.io/fsky/gibcert/releases/tag/v0.1.0
+[unreleased]: https://gitfield.org/fsky/gibcert/compare/v0.2.0...HEAD
+[0.2.0]: https://gitfield.org/fsky/gibcert/compare/v0.1.0...v0.2.0
+[0.1.0]: https://gitfield.org/fsky/gibcert/releases/tag/v0.1.0

@@ -25,7 +25,7 @@ import (
 	"sync"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 type fakePowerDNS struct {

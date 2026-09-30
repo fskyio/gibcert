@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 type DNSExec struct {

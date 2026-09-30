@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/deploy"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/deploy"
 )
 
 func reloadCert(name string, cmds ...string) *config.Certificate {

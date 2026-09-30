@@ -22,11 +22,11 @@ import (
 	"os"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/deploy"
-	"foundry.fsky.io/fsky/gibcert/internal/localca"
-	"foundry.fsky.io/fsky/gibcert/internal/renew"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/deploy"
+	"gitfield.org/fsky/gibcert/internal/localca"
+	"gitfield.org/fsky/gibcert/internal/renew"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 type Plan struct {

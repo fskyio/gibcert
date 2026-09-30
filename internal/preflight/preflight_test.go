@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func TestCheckHTTP01Webroot(t *testing.T) {

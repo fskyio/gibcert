@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/acme"
+	"gitfield.org/fsky/gibcert/internal/acme"
 )
 
 func TestRenewalInfo(t *testing.T) {

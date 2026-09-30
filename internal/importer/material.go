@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 // CertMaterial is one certificate/key pair ready to be copied into gibcert's

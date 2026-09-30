@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 func writeCertbotDir(t *testing.T, root, certName string, fc fakeCert, conf string) {
