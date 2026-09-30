@@ -26,11 +26,11 @@ import (
 	"os"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/acme"
+	"gitfield.org/fsky/gibcert/internal/acme"
 
-	"foundry.fsky.io/fsky/gibcert/internal/buildinfo"
-	"foundry.fsky.io/fsky/gibcert/internal/secrets"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/buildinfo"
+	"gitfield.org/fsky/gibcert/internal/secrets"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 // Client bundles a low-level ACME client (internal/acme) with the account it

@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"os"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func GenerateAccountKey() (crypto.Signer, error) {

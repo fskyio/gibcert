@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 // eabFor encodes the resolved HMAC secret as a base64url MACKey that internal/acme

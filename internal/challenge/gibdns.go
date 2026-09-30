@@ -32,7 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 const (

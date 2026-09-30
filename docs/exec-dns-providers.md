@@ -2,11 +2,11 @@
 
 gibcert does not embed every DNS API. Built-in drivers cover manual DNS, RFC
 2136/nsupdate, and PowerDNS. For other services, install a
-[gibdns](https://foundry.fsky.io/gibdns/gibdns) provider binary and point the
+[gibdns](https://gitfield.org/gibdns/gibdns) provider binary and point the
 `exec` driver at it.
 
 The `exec` driver implements the frozen
-[`gibdns/draft-01`](https://foundry.fsky.io/gibdns/gibdns) `exec-json` binding.
+[`gibdns/draft-01`](https://gitfield.org/gibdns/gibdns) `exec-json` binding.
 The older `DNSREC_*` environment protocol is not supported. Starting with
 gibcert v0.2, an exec provider must implement `gibdns/draft-01`.
 
@@ -20,13 +20,13 @@ Install one of these programs next to gibcert, then set `command` to its path.
 
 | Provider | Service | Binary | TXT | TLSA | Install |
 | --- | --- | --- | --- | --- | --- |
-| [gibdns-cloudflare](https://foundry.fsky.io/gibdns/gibdns-cloudflare) | Cloudflare DNS | `gibdns-cloudflare` | yes | yes | [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) |
-| [gibdns-desec](https://foundry.fsky.io/gibdns/gibdns-desec) | deSEC | `gibdns-desec` | yes | yes | [releases](https://foundry.fsky.io/gibdns/gibdns-desec/releases) |
-| [gibdns-gcore](https://foundry.fsky.io/gibdns/gibdns-gcore) | Gcore DNS | `gibdns-gcore` | yes | no | [releases](https://foundry.fsky.io/gibdns/gibdns-gcore/releases) |
+| [gibdns-cloudflare](https://gitfield.org/gibdns/gibdns-cloudflare) | Cloudflare DNS | `gibdns-cloudflare` | yes | yes | [releases](https://gitfield.org/gibdns/gibdns-cloudflare/releases) |
+| [gibdns-desec](https://gitfield.org/gibdns/gibdns-desec) | deSEC | `gibdns-desec` | yes | yes | [releases](https://gitfield.org/gibdns/gibdns-desec/releases) |
+| [gibdns-gcore](https://gitfield.org/gibdns/gibdns-gcore) | Gcore DNS | `gibdns-gcore` | yes | no | [releases](https://gitfield.org/gibdns/gibdns-gcore/releases) |
 
-The live catalog is [gibdns PROVIDERS.md](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
+The live catalog is [gibdns PROVIDERS.md](https://gitfield.org/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
 Operator setup that is not gibcert-specific is in
-[Using gibdns](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/USING.md).
+[Using gibdns](https://gitfield.org/gibdns/gibdns/src/branch/main/docs/USING.md).
 
 Debian packages install providers to `/usr/libexec/gibdns`. From source, the
 default is `/usr/local/libexec/gibdns`:
@@ -44,7 +44,7 @@ absolute path in `command`; source installs use
 ## Install and configure (Cloudflare)
 
 1. Install `gibdns-cloudflare` from its
-   [releases](https://foundry.fsky.io/gibdns/gibdns-cloudflare/releases) or
+   [releases](https://gitfield.org/gibdns/gibdns-cloudflare/releases) or
    with `make install PREFIX=/usr/local`.
 2. Create a scoped Cloudflare API token with `Zone.DNS:Write` on the zone.
    Store it at `/etc/gibcert/cloudflare-token` with mode `0600`.

@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 // ACMEShOptions controls a single acme.sh import run.

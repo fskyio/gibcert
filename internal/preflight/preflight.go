@@ -22,7 +22,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func Check(cfg *config.Config) error {

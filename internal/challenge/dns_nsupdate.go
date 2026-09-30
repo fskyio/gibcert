@@ -22,7 +22,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 type DNSNSUpdate struct {

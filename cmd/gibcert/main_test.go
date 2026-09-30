@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/paths"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/paths"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 func TestShouldJitterBeforeRenewal(t *testing.T) {

@@ -102,7 +102,7 @@ instead of embedding every DNS API into the main program.
 Official gibdns providers currently cover Cloudflare, deSEC, and Gcore. Install
 the provider binary and point the `exec` driver's `command` at it. See
 [External DNS Providers](exec-dns-providers.md) and the
-[gibdns catalog](https://foundry.fsky.io/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
+[gibdns catalog](https://gitfield.org/gibdns/gibdns/src/branch/main/docs/PROVIDERS.md).
 
 That model is useful when you want provider integrations to be small,
 separable, and testable outside of gibcert. It also lets the same provider

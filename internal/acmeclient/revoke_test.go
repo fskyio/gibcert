@@ -24,8 +24,8 @@ import (
 	"os"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/acme"
-	"foundry.fsky.io/fsky/gibcert/internal/storage"
+	"gitfield.org/fsky/gibcert/internal/acme"
+	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 func TestRevocationReasonAndKnownReason(t *testing.T) {

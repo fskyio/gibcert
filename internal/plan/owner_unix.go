@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func plannedOwnerGroupChangesForOS(info os.FileInfo, name string, d *config.Deploy) ([]string, error) {

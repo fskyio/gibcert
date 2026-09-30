@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/config"
 )
 
 func TestDNSNSUpdateProtocol(t *testing.T) {

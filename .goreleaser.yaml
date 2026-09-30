@@ -16,10 +16,10 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Version={{ .Version }}
-      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Commit={{ .Commit }}
-      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.Date={{ .Date }}
-      - -X foundry.fsky.io/fsky/gibcert/internal/buildinfo.BuiltBy=goreleaser
+      - -X gitfield.org/fsky/gibcert/internal/buildinfo.Version={{ .Version }}
+      - -X gitfield.org/fsky/gibcert/internal/buildinfo.Commit={{ .Commit }}
+      - -X gitfield.org/fsky/gibcert/internal/buildinfo.Date={{ .Date }}
+      - -X gitfield.org/fsky/gibcert/internal/buildinfo.BuiltBy=goreleaser
     goos:
       - linux
       - darwin
@@ -59,7 +59,7 @@ nfpms:
   - id: gibcert-deb
     package_name: gibcert
     vendor: FSKY
-    homepage: https://foundry.fsky.io/fsky/gibcert
+    homepage: https://gitfield.org/fsky/gibcert
     maintainer: FSKY <development@fsky.io>
     description: |-
       ACME and local certificate manager.
@@ -116,8 +116,8 @@ checksum:
   name_template: checksums.txt
 
 gitea_urls:
-  api: https://foundry.fsky.io/api/v1
-  download: https://foundry.fsky.io
+  api: https://gitfield.org/api/v1
+  download: https://gitfield.org
 
 release:
   gitea:

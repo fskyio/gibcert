@@ -21,7 +21,7 @@ import (
 	"errors"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/acme"
+	"gitfield.org/fsky/gibcert/internal/acme"
 )
 
 // ErrARIUnsupported is returned by RenewalInfo when the ACME server does not

@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"foundry.fsky.io/fsky/gibcert/internal/config"
-	"foundry.fsky.io/fsky/gibcert/internal/secrets"
+	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/secrets"
 )
 
 type DNSPowerDNS struct {
