@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and validity before replacing canonical material or promoting staged keys.
 - Bound standalone TLS-ALPN handshake time and concurrency, and close accepted
   transports and drain workers when issuance shuts the listener down.
+- Enforce dns-persist wildcard policy from the ACME authorization flag while
+  retaining base-domain and alias lookups.
 
 ## [0.2.1] - 2026-10-02
 

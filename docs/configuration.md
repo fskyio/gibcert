@@ -665,6 +665,8 @@ Wildcard identifiers require `policy=wildcard`:
 _validation-persist.example.com. IN TXT "letsencrypt.org; accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/1234567890; policy=wildcard"
 ```
 
+During issuance, wildcard authorization is determined by the ACME authorization's `wildcard` flag, even when its identifier contains only the base domain (for example, `example.com`). The standing record is still looked up at the base domain or configured alias; only wildcard authorizations require the wildcard policy.
+
 If you add `persistUntil` manually, use a base-10 UNIX timestamp. gibcert treats malformed or expired `persistUntil` values as non-matching during preflight checks.
 
 This challenge is based on a draft IETF spec; record format and challenge name may change.

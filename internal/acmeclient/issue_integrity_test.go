@@ -296,6 +296,7 @@ func fakeIssueClient(t *testing.T, authz *acme.Authorization, chain func(*x509.C
 	}
 	var certificate []byte
 	downloaded := false
+	challengeInitiated := false
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Replay-Nonce", "nonce-value")
@@ -314,8 +315,17 @@ func fakeIssueClient(t *testing.T, authz *acme.Authorization, chain func(*x509.C
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(order)
 		case "/authz":
-			_ = json.NewEncoder(w).Encode(authz)
+			response := *authz
+			response.Challenges = append([]acme.Challenge(nil), authz.Challenges...)
+			for i := range response.Challenges {
+				response.Challenges[i].URL = srv.URL + "/challenge"
+			}
+			if challengeInitiated {
+				response.Status = acme.StatusValid
+			}
+			_ = json.NewEncoder(w).Encode(response)
 		case "/challenge":
+			challengeInitiated = true
 			_ = json.NewEncoder(w).Encode(acme.Challenge{Type: challengeDNSPersist01, Status: acme.StatusValid})
 		case "/finalize":
 			var jws struct {
@@ -358,5 +368,7 @@ func fakeIssueClient(t *testing.T, authz *acme.Authorization, chain func(*x509.C
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Client{acme: newACMEClient(srv.URL+"/directory", srv.Client()), account: acme.Account{Location: srv.URL + "/acct/1", PrivateKey: accountKey}}, &downloaded
+	acmeClient := newACMEClient(srv.URL+"/directory", srv.Client())
+	acmeClient.PollInterval = time.Millisecond
+	return &Client{acme: acmeClient, account: acme.Account{Location: srv.URL + "/acct/1", PrivateKey: accountKey}}, &downloaded
 }

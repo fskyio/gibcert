@@ -289,7 +289,7 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 			res, err := challenge.VerifyDNSPersistRecordWithOptions(ctx, verifyDomain, challenge.DNSPersistVerifyOptions{
 				IssuerDomainNames: issuerDomainNames,
 				AccountURI:        accountURI,
-				RequireWildcard:   strings.HasPrefix(authz.Identifier.Value, "*."),
+				RequireWildcard:   authz.Wildcard,
 			})
 			if err != nil {
 				return fmt.Errorf("dns-persist-01 verify: %w", err)
