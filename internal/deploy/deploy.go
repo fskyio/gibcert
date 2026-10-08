@@ -16,16 +16,11 @@
 package deploy
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/user"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -64,22 +59,11 @@ func Deploy(cert *config.Certificate, store *storage.Store, out io.Writer) ([]Re
 		return nil, fmt.Errorf("load cert metadata: %w", err)
 	}
 	for _, d := range cert.Deploys {
-		planned, err := planDeploy(d, srcCert, srcChain, srcFullchain, srcKey)
-		if err != nil {
-			return results, fmt.Errorf("deploy %q: plan: %w", d.Name, err)
-		}
-		if err := runHook(d.Before, "before-deploy", cert, d, planned); err != nil {
-			return results, fmt.Errorf("deploy %q: before hook: %w", d.Name, err)
-		}
-		r, records, err := deployOne(d, srcCert, srcChain, srcFullchain, srcKey, out)
+		r, records, err := deployOne(cert, d, meta, srcCert, srcChain, srcFullchain, srcKey, out)
 		if err != nil {
 			return results, fmt.Errorf("deploy %q: %w", d.Name, err)
 		}
 		results = append(results, r)
-		hookChanged := hookChangedKinds(meta, records, r.Changed)
-		if err := runHook(d.After, "after-deploy", cert, d, Result{Target: r.Target, Changed: hookChanged}); err != nil {
-			return results, fmt.Errorf("deploy %q: after hook: %w", d.Name, err)
-		}
 		upsertDeployRecords(meta, records)
 		if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
 			return results, fmt.Errorf("deploy %q: save metadata: %w", d.Name, err)
@@ -107,82 +91,41 @@ func derVariants(d *config.Deploy, srcCert, srcKey []byte) (derCert, derKey []by
 	return derCert, derKey, nil
 }
 
-func planDeploy(d *config.Deploy, srcCert, srcChain, srcFullchain, srcKey []byte) (Result, error) {
-	r := Result{Target: d.Name}
-	derCert, derKey, err := derVariants(d, srcCert, srcKey)
-	if err != nil {
-		return r, err
+func deployOne(cert *config.Certificate, d *config.Deploy, meta *storage.CertMeta, srcCert, srcChain, srcFullchain, srcKey []byte, out io.Writer) (Result, []storage.CertDeployMeta, error) {
+	if d.Before != "" && d.After == "" {
+		return Result{}, nil, fmt.Errorf("before hook requires an after hook for recovery")
 	}
-	items := []struct {
-		kind string
-		dst  string
-		data []byte
-	}{
-		{"cert", d.Cert, srcCert},
-		{"chain", d.Chain, srcChain},
-		{"fullchain", d.Fullchain, srcFullchain},
-		{"key", d.Key, srcKey},
-		{"cert-der", d.CertDER, derCert},
-		{"key-der", d.KeyDER, derKey},
+	var staged stagedDeploy
+	defer staged.cleanup()
+	if err := staged.prepare(d, srcCert, srcChain, srcFullchain, srcKey, out); err != nil {
+		return Result{}, nil, fmt.Errorf("stage: %w", err)
 	}
-
-	for _, it := range items {
-		if it.dst == "" || len(it.data) == 0 {
-			continue
+	beforeAttempted := d.Before != "" && len(staged.result.Changed) != 0
+	recoverHook := func() error {
+		if !beforeAttempted {
+			return nil
 		}
-		changed, err := fileContentChanged(it.dst, it.data)
-		if err != nil {
-			return r, fmt.Errorf("%s: %w", it.kind, err)
+		if err := runHook(d.After, "rollback-deploy", cert, d, staged.result); err != nil {
+			return fmt.Errorf("recovery hook: %w", err)
 		}
-		if changed {
-			r.Changed = append(r.Changed, it.kind)
-		}
+		return nil
 	}
-	return r, nil
-}
-
-func deployOne(d *config.Deploy, srcCert, srcChain, srcFullchain, srcKey []byte, out io.Writer) (Result, []storage.CertDeployMeta, error) {
-	r := Result{Target: d.Name}
-	var records []storage.CertDeployMeta
-	now := timeNow()
-	derCert, derKey, err := derVariants(d, srcCert, srcKey)
-	if err != nil {
-		return r, records, err
+	if err := runHook(d.Before, "before-deploy", cert, d, staged.result); err != nil {
+		return Result{}, nil, errors.Join(fmt.Errorf("before hook: %w", err), recoverHook())
 	}
-	items := []struct {
-		kind string
-		dst  string
-		data []byte
-		mode fs.FileMode
-	}{
-		{"cert", d.Cert, srcCert, 0o644},
-		{"chain", d.Chain, srcChain, 0o644},
-		{"fullchain", d.Fullchain, srcFullchain, 0o644},
-		{"key", d.Key, srcKey, 0o600},
-		{"cert-der", d.CertDER, derCert, 0o644},
-		{"key-der", d.KeyDER, derKey, 0o600},
+	if err := staged.install(); err != nil {
+		rollbackErr := staged.rollback()
+		var hookErr error
+		if rollbackErr == nil {
+			hookErr = recoverHook()
+		}
+		return Result{}, nil, errors.Join(err, rollbackErr, hookErr)
 	}
-
-	for _, it := range items {
-		if it.dst == "" || len(it.data) == 0 {
-			continue
-		}
-		changed, err := installFile(it.dst, it.data, it.mode, d, out)
-		if err != nil {
-			return r, records, fmt.Errorf("%s: %w", it.kind, err)
-		}
-		records = append(records, storage.CertDeployMeta{
-			Target: d.Name,
-			Kind:   it.kind,
-			Path:   it.dst,
-			SHA256: storage.SHA256Hex(it.data),
-			At:     now,
-		})
-		if changed {
-			r.Changed = append(r.Changed, it.kind)
-		}
+	hookChanged := hookChangedKinds(meta, staged.records, staged.result.Changed)
+	if err := runHook(d.After, "after-deploy", cert, d, Result{Target: d.Name, Changed: hookChanged}); err != nil {
+		return Result{}, nil, fmt.Errorf("after hook: %w", err)
 	}
-	return r, records, nil
+	return staged.result, staged.records, nil
 }
 
 var timeNow = func() time.Time { return time.Now().UTC() }
@@ -259,122 +202,6 @@ func DesiredMode(defaultMode fs.FileMode, existing os.FileInfo, d *config.Deploy
 	return mode, nil
 }
 
-func installFile(dst string, data []byte, defaultMode fs.FileMode, d *config.Deploy, out io.Writer) (bool, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return false, err
-	}
-
-	existing, statErr := os.Stat(dst)
-	mode, err := DesiredMode(defaultMode, existing, d)
-	if err != nil {
-		return false, err
-	}
-	if statErr == nil {
-		existingData, err := os.ReadFile(dst)
-		if err == nil && bytes.Equal(hash(existingData), hash(data)) {
-			if err := applyAttrs(dst, existing, defaultMode, d); err != nil {
-				return false, err
-			}
-			return false, nil
-		}
-	}
-
-	if d.Mode == nil && statErr != nil {
-		fmt.Fprintf(out, "warning: %s: creating with default mode %#o (set deploy.mode to silence)\n", dst, mode)
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".gibcert-*")
-	if err != nil {
-		return false, err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := chownTo(tmpName, d, statErr == nil, existing); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmpName, dst); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func fileContentChanged(dst string, data []byte) (bool, error) {
-	existingData, err := os.ReadFile(dst)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return !bytes.Equal(hash(existingData), hash(data)), nil
-}
-
-func applyAttrs(path string, existing os.FileInfo, defaultMode fs.FileMode, d *config.Deploy) error {
-	desiredMode, err := DesiredMode(defaultMode, existing, d)
-	if err != nil {
-		return err
-	}
-	if existing.Mode().Perm() != desiredMode {
-		if err := os.Chmod(path, desiredMode); err != nil {
-			return err
-		}
-	}
-	if d.Owner == "" && d.Group == "" {
-		return nil
-	}
-	return chownTo(path, d, true, existing)
-}
-
-func chownTo(path string, d *config.Deploy, dstExists bool, existing os.FileInfo) error {
-	uid, gid := -1, -1
-	if dstExists {
-		uid, gid = fileOwnership(existing)
-	}
-	if d.Owner == "" && d.Group == "" && uid == -1 && gid == -1 {
-		return nil
-	}
-	if d.Owner != "" {
-		u, err := user.Lookup(d.Owner)
-		if err != nil {
-			return fmt.Errorf("owner %q: %w", d.Owner, err)
-		}
-		uid, err = strconv.Atoi(u.Uid)
-		if err != nil {
-			return fmt.Errorf("owner %q uid %q: %w", d.Owner, u.Uid, err)
-		}
-	}
-	if d.Group != "" {
-		g, err := user.LookupGroup(d.Group)
-		if err != nil {
-			return fmt.Errorf("group %q: %w", d.Group, err)
-		}
-		gid, err = strconv.Atoi(g.Gid)
-		if err != nil {
-			return fmt.Errorf("group %q gid %q: %w", d.Group, g.Gid, err)
-		}
-	}
-	if err := os.Chown(path, uid, gid); err != nil {
-		if os.Geteuid() != 0 {
-			return fmt.Errorf("chown requires privileges (running as non-root): %w", err)
-		}
-		return err
-	}
-	return nil
-}
-
 func runHook(command, event string, cert *config.Certificate, d *config.Deploy, r Result) error {
 	if command == "" || len(r.Changed) == 0 {
 		return nil
@@ -426,9 +253,4 @@ func RunReload(command string, changedCerts []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-func hash(b []byte) []byte {
-	h := sha256.Sum256(b)
-	return h[:]
 }

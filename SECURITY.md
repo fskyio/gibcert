@@ -10,6 +10,6 @@ Send a description of the issue to **contact@fsky.io** over e-mail or **ethereal
 
 - Private keys and account keys are written with mode `0600`.
 - DNS API credentials are read from config at runtime and never written to disk by gibcert.
-- Cert and key files are deployed atomically to avoid partial writes.
+- Deploy targets stage all files and attributes before hooks, replace each file atomically, and roll back earlier replacements on ordinary installation errors. Multi-file switching is not crash-atomic; use stop/start hooks to exclude concurrent service reads.
 
 Run gibcert as a dedicated low-privilege user where possible. See [docs/systemd.md](docs/systemd.md) for a hardened systemd unit example.

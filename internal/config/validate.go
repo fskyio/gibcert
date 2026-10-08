@@ -589,5 +589,8 @@ func validateDeploy(d *Deploy) error {
 	if (d.Key != "" || d.KeyDER != "") && d.Mode != nil && *d.Mode&0o117 != 0 {
 		return fmt.Errorf("private-key mode must not permit other access or execution, got %#o", *d.Mode)
 	}
+	if d.Before != "" && d.After == "" {
+		return fmt.Errorf("before hook requires an after hook for recovery")
+	}
 	return nil
 }

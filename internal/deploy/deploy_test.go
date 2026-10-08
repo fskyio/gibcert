@@ -106,6 +106,7 @@ func TestDeployRunsBeforeHookBeforeWriting(t *testing.T) {
 			Name:      "local",
 			Fullchain: dst,
 			Before:    `printf '%s|%s|' "$GIBCERT_EVENT" "$GIBCERT_CHANGED" > "$GIBCERT_TEST_HOOK_LOG"; cat "$GIBCERT_FULLCHAIN_PATH" >> "$GIBCERT_TEST_HOOK_LOG"`,
+			After:     `printf started > "$GIBCERT_TEST_HOOK_LOG.after"`,
 		}},
 	}
 
@@ -159,6 +160,7 @@ func TestDeployBeforeHookFailureShortCircuitsWrites(t *testing.T) {
 			Name:      "local",
 			Fullchain: dst,
 			Before:    "exit 23",
+			After:     `printf '%s' "$GIBCERT_EVENT" > "$GIBCERT_FULLCHAIN_PATH.recovery"`,
 		}},
 	}
 
@@ -174,6 +176,10 @@ func TestDeployBeforeHookFailureShortCircuitsWrites(t *testing.T) {
 	}
 	if _, err := store.LoadCertMeta("example.com"); !os.IsNotExist(err) {
 		t.Fatalf("metadata after failed before hook error = %v, want not exist", err)
+	}
+	recovery, err := os.ReadFile(dst + ".recovery")
+	if err != nil || string(recovery) != "rollback-deploy" {
+		t.Fatalf("before failure did not invoke recovery: %q, %v", recovery, err)
 	}
 }
 

@@ -343,14 +343,14 @@ After importing, add a matching `certificate` block to the config and run `gibce
 
 ## Hooks
 
-A deploy target can run a `before` hook before changed material is deployed and an `after` hook once changed material is in place. The `after` hook also runs when metadata shows the target has not previously seen the current material, so a failed reload is retried on the next deploy.
+A deploy target stages all changed files and their attributes before running its `before` hook, then replaces the files and runs `after`. A `before` hook requires an `after` hook so a stopped service has a recovery action. On an installation failure, earlier replacements are rolled back and `after` runs with `GIBCERT_EVENT=rollback-deploy`; it also runs to recover from a failed `before` hook. Recovery is not run if rollback itself fails. The `after` hook also runs when metadata shows the target has not previously seen the current material, so a failed success hook is retried on the next deploy.
 
 ```scfg
 deploy nginx {
   fullchain /etc/nginx/tls/example.com/fullchain.pem
   key /etc/nginx/tls/example.com/privkey.pem
   before "systemctl stop nginx"
-  after "systemctl reload nginx"
+  after "systemctl start nginx"
 }
 ```
 
@@ -369,7 +369,7 @@ Hooks run through the platform shell (`sh -c` on Unix-like systems, `cmd /C` on 
 - `GIBCERT_KEY_DER_PATH`
 
 `GIBCERT_CHANGED` is a comma-separated list of changed material kinds such as `cert`, `chain`, `fullchain`, `key`, `cert-der`, and `key-der`.
-`GIBCERT_EVENT` is `before-deploy` for a `before` hook and `after-deploy` for an `after` hook.
+`GIBCERT_EVENT` is `before-deploy` for a `before` hook, `after-deploy` for a successful replacement, and `rollback-deploy` when `after` is invoked for recovery. Individual renames are atomic, but a multi-file update is not crash-atomic. Stop/start hooks prevent a running service from observing the interval between replacements.
 
 ### Reload hooks
 

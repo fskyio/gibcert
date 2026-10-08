@@ -1296,3 +1296,14 @@ func TestDeployRejectsUnsafePrivateKeyModes(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployBeforeRequiresRecoveryHook(t *testing.T) {
+	d := &Deploy{Name: "local", Fullchain: "/etc/service/fullchain.pem", Before: "systemctl stop service"}
+	cfg := &Config{
+		CAs:          []*CA{{Name: "dev", Type: "local"}},
+		Certificates: []*Certificate{{Name: "service", CA: "dev", Names: []string{"service.example"}, Deploys: []*Deploy{d}}},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "before hook requires an after hook") {
+		t.Fatalf("Validate = %v, want missing recovery hook error", err)
+	}
+}

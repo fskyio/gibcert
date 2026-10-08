@@ -705,7 +705,7 @@ deploy nginx {
   group www-data
   mode 0640
   before "systemctl stop nginx"
-  after "systemctl reload nginx"
+  after "systemctl start nginx"
 }
 ```
 
@@ -722,8 +722,8 @@ Directives:
 | `owner NAME` | Owner to set on deployed files. Requires privileges. |
 | `group NAME` | Group to set on deployed files. Requires privileges. |
 | `mode MODE` | File mode for deployed files, such as `0640`. Must be `0777` or lower. Targets containing a private key must not grant other access or execute permission. |
-| `before COMMAND` | Command to run before changed material is deployed. Runs through the platform shell: `sh -c` on Unix-like systems, `cmd /C` on Windows, and `rc -c` on Plan 9. |
-| `after COMMAND` | Command to run after changed material is deployed. Runs through the platform shell: `sh -c` on Unix-like systems, `cmd /C` on Windows, and `rc -c` on Plan 9. |
+| `before COMMAND` | Command to run after all output files and attributes are staged, before replacement. Requires an `after` hook for recovery. Runs through the platform shell. |
+| `after COMMAND` | Command to run after successful replacement, or to recover after a failed `before` hook or a completed rollback. Check `GIBCERT_EVENT`: `after-deploy` or `rollback-deploy`. Runs through the platform shell. |
 
 At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` must be set. All deploy paths must be absolute and must not collide with any other output path in the configuration, including after path normalization. The DER targets emit the same material as `cert` and `key` in binary DER form; `chain`/`fullchain` have no DER form because concatenated DER certificates are not a portable format.
 
@@ -731,7 +731,9 @@ By default, new certificate files are created with mode `0644` and new private k
 
 On Unix-like systems, replacement files preserve the destination's existing owner and group for any attribute omitted from the deploy block. Explicit `owner` or `group` changes only that attribute. First-time files retain process-created ownership unless overridden.
 
-Deploy writes files atomically and only reports a file as changed when content differs. Ownership and mode are still reconciled when content is already current.
+Each target stages every output, mode, and owner/group before running its `before` hook. Files are then replaced by individual atomic renames. An installation failure rolls back earlier replacements; only a completed rollback runs the `after` recovery hook with `GIBCERT_EVENT=rollback-deploy`. Rollback errors report retained backup paths and do not run recovery against a potentially mixed set. This protects against ordinary errors, not a process crash or a concurrent reader between renames; use stop/start hooks when a service must not read during replacement.
+
+Only content differences are reported as changes. Ownership and mode are still reconciled when content is already current. Deployment metadata is saved only after the success hook completes. If that hook fails, the complete new file set remains installed and the hook is retried by a later deploy.
 
 ## `tlsa`
 

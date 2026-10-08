@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, while preserving valid configured failover and imported certificates.
 - Preserve destination UID/GID when replacing deployed files, including the
   unspecified attribute of an owner-only or group-only override.
+- Stage complete deploy targets before hooks, roll back partial installation,
+  and require a recovery hook for before actions that can stop services.
 
 ## [0.2.1] - 2026-10-02
 
