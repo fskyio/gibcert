@@ -70,7 +70,7 @@ For ACME certificates, this creates an ACME order and completes the configured c
 
 Renew due certificates and deploy changed material.
 
-A certificate is due when it is missing, unreadable, expired, or inside its renewal window. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
+A certificate is due when it is missing, unreadable, expired, inside its renewal window, has different configured SANs, or has a known issuer identity no longer accepted by the configuration. A configured local CA that is not ready also makes it due. `plan`, `apply`, `renew`, `list`, and `show` share this decision. SAN comparison ignores order, DNS case, and equivalent IP spellings but treats wildcards exactly. Issuer comparison includes account, CA, issuer type, and ACME directory; a still-configured failover issuer is accepted. Imported certificates and incomplete legacy metadata do not establish issuer ownership. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
 
 | Flag | Description |
 | --- | --- |
@@ -170,8 +170,8 @@ List configured certificates with compact certificate, issuer, renewal, and depl
 Certificate statuses are:
 
 - `missing`: no readable local leaf certificate.
-- `valid`: local certificate exists and is outside the renewal window.
-- `due`: local certificate exists and is inside the renewal window.
+- `valid`: local certificate is current and is not due for renewal.
+- `due`: local certificate needs renewal or replacement because of its renewal window, ARI, configured names or known issuer identity, or local CA readiness.
 - `expired`: local certificate is expired.
 - `revoked`: local metadata records a successful revocation.
 - `meta-error`: local certificate metadata exists but is unreadable.

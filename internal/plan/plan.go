@@ -64,7 +64,6 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, err
 	for _, cert := range orderedCerts {
 		configuredCerts[cert.Name] = true
 		certUsesLocalCA := false
-		localCAWillChange := false
 		if cert.CA != "" {
 			ca := cas[cert.CA]
 			if ca != nil {
@@ -81,17 +80,14 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, err
 					if !plannedLocalCAs[ca.Name] {
 						plannedLocalCAs[ca.Name] = true
 						if action := localCAAction(ca, store, now); action != nil {
-							localCAWillChange = true
 							p.Actions = append(p.Actions, *action)
 						}
-					} else if action := localCAAction(ca, store, now); action != nil {
-						localCAWillChange = true
 					}
 				}
 			}
 		}
-		d := renew.ShouldRenew(cert, store, now)
-		certWillChange := d.Due || localCAWillChange
+		d := renew.ShouldRenew(cfg, cert, store, now)
+		certWillChange := d.Due
 		if certWillChange {
 			verb := "renew"
 			if d.NotAfter.IsZero() {
@@ -106,7 +102,7 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, err
 			p.Actions = append(p.Actions, Action{
 				Subject: "certificate " + cert.Name,
 				Verb:    verb,
-				Detail:  certActionDetail(d, localCAWillChange),
+				Detail:  d.Reason,
 			})
 			if cert.TLSA != nil {
 				p.Actions = append(p.Actions, tlsaAction(cert, store))
@@ -149,13 +145,6 @@ func tlsaAction(cert *config.Certificate, store *storage.Store) Action {
 		Verb:    "rotate",
 		Detail:  "promote next key, publish new next-key fingerprint",
 	}
-}
-
-func certActionDetail(d renew.Decision, localCAWillChange bool) string {
-	if localCAWillChange && !d.Due {
-		return "local CA changed or missing"
-	}
-	return d.Reason
 }
 
 func accountAction(account *config.Account, store *storage.Store) *Action {

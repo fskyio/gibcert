@@ -689,6 +689,8 @@ Directives:
 
 The default renewal window is based on the stored leaf certificate's actual `notBefore` and `notAfter` values, so short-lived ACME profiles automatically renew on a shorter cadence. Set `before-expiry` to use an exact fixed window instead.
 
+The renewal window does not delay configuration changes: added or removed SANs and a changed known issuer identity make a stored leaf due immediately. Names are compared as sets against the actual leaf SANs, with DNS case and IP spellings normalized; wildcards must match exactly. Known issuer identity includes type, account, CA, and directory. A configured failover issuer is also accepted, preventing repeated replacement after successful failover issuance. Imported certificates and incomplete legacy metadata are not assumed to belong to the configured issuer; their SANs and validity are still checked. A configured local CA that is missing or unready also makes its certificate due. These rules are shared by `plan`, `apply`, `renew`, `list`, and `show`.
+
 ## `deploy`
 
 Copies stored canonical material to service paths and optionally runs a hook.

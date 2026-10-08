@@ -15,6 +15,8 @@
 
 package config
 
+import "fmt"
+
 var builtinCAs = []*CA{
 	{
 		Name:              "letsencrypt",
@@ -64,4 +66,76 @@ func CAProfiles(userCAs []*CA) map[string]*CA {
 
 func caProfiles(userCAs []*CA) map[string]*CA {
 	return CAProfiles(userCAs)
+}
+
+// ACMEAccountForCertificate resolves the primary explicit or implicit account.
+func ACMEAccountForCertificate(cfg *Config, cert *Certificate) (*Account, error) {
+	return acmeIssuerAccount(cfg, Issuer{Account: cert.Account, CA: cert.CA})
+}
+
+// ACMEIssuersForCertificate resolves the primary and configured failover issuers
+// in priority order. Both issuance and currentness use these identities.
+func ACMEIssuersForCertificate(cfg *Config, cert *Certificate) ([]*Account, error) {
+	primary, err := ACMEAccountForCertificate(cfg, cert)
+	if err != nil {
+		return nil, err
+	}
+	issuers := []*Account{primary}
+	for _, issuer := range cert.Failover {
+		account, err := acmeIssuerAccount(cfg, issuer)
+		if err != nil {
+			return nil, fmt.Errorf("failover: %w", err)
+		}
+		issuers = append(issuers, account)
+	}
+	return issuers, nil
+}
+
+func acmeIssuerAccount(cfg *Config, issuer Issuer) (*Account, error) {
+	if issuer.Account != "" {
+		for _, account := range cfg.Accounts {
+			if account.Name == issuer.Account {
+				return account, nil
+			}
+		}
+		return nil, fmt.Errorf("account %q not in config", issuer.Account)
+	}
+	ca := issuerCA(cfg, issuer.CA)
+	if ca == nil {
+		return nil, fmt.Errorf("ca %q not in config", issuer.CA)
+	}
+	if ca.Type != "acme" {
+		return nil, fmt.Errorf("ca %q is %s, want acme", ca.Name, ca.Type)
+	}
+	return &Account{
+		Name:      ImplicitACMEAccountName(ca.Name),
+		CA:        ca.Name,
+		Directory: ca.Directory,
+	}, nil
+}
+
+// LocalCAForCertificate identifies certificates configured for local signing.
+func LocalCAForCertificate(cfg *Config, cert *Certificate) (*CA, bool, error) {
+	if cert.CA == "" {
+		return nil, false, nil
+	}
+	ca := issuerCA(cfg, cert.CA)
+	if ca == nil {
+		return nil, false, fmt.Errorf("ca %q not in config", cert.CA)
+	}
+	return ca, ca.Type == "local", nil
+}
+
+func issuerCA(cfg *Config, name string) *CA {
+	for _, ca := range cfg.CAs {
+		if ca.Name == name {
+			return ca
+		}
+	}
+	for _, ca := range builtinCAs {
+		if ca.Name == name {
+			return ca
+		}
+	}
+	return nil
 }

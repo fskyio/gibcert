@@ -60,6 +60,12 @@ Renew due certificates and deploy changed material. The default ACME renewal
 jitter is 5m. When before-expiry is unset, the renewal window is one third of
 the current certificate lifetime, capped at 30 days. \fB\-\-no\-jitter\fR
 disables jitter.
+Certificates are also due when configured SANs or known issuer identity differ,
+or a configured local CA is not ready. Plan, apply, renew, list, and show share
+this decision. SAN sets ignore order, DNS case, and equivalent IP spellings;
+wildcards must match exactly. Issuer identity includes type, account, CA, and
+ACME directory. Configured failover issuers remain acceptable. Imported and
+incomplete legacy metadata do not establish issuer ownership.
 .TP
 .B account rotate-key \fIACCOUNT\fR
 Rotate an existing ACME account key using ACME account key rollover. The

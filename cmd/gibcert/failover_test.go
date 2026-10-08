@@ -86,7 +86,7 @@ func TestIssueWithFailoverAllFail(t *testing.T) {
 	}
 }
 
-func TestAcmeIssuersForCert(t *testing.T) {
+func TestACMEIssuersForCertificate(t *testing.T) {
 	cfg := &config.Config{
 		Accounts: []*config.Account{{Name: "sectigo", CA: "buypass", Directory: "https://api.buypass.com/acme/directory"}},
 		Certificates: []*config.Certificate{{
@@ -98,9 +98,9 @@ func TestAcmeIssuersForCert(t *testing.T) {
 			},
 		}},
 	}
-	issuers, err := acmeIssuersForCert(cfg, cfg.Certificates[0])
+	issuers, err := config.ACMEIssuersForCertificate(cfg, cfg.Certificates[0])
 	if err != nil {
-		t.Fatalf("acmeIssuersForCert: %v", err)
+		t.Fatalf("ACMEIssuersForCertificate: %v", err)
 	}
 	got := []string{issuers[0].Name, issuers[1].Name, issuers[2].Name}
 	want := []string{"sectigo", config.ImplicitACMEAccountName("letsencrypt"), "sectigo"}

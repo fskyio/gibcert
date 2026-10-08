@@ -279,6 +279,11 @@ and dns-persist-01.
 .B renew { before-expiry \fIDURATION\fR }
 Renewal window. If unset, gibcert uses one third of the current certificate
 lifetime, capped at 30 days.
+SAN or known issuer changes make a leaf due immediately, regardless of this
+window. SAN sets ignore order and normalize DNS case and IP spellings;
+wildcards are exact. Issuer identity includes type, account, CA, and directory.
+A configured failover issuer remains acceptable. Imported certificates and
+incomplete legacy metadata do not establish issuer ownership.
 .TP
 .B deploy \fINAME\fR { ... }
 Deployment target. Optional; a certificate with no deploy blocks is still

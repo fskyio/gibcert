@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transports and drain workers when issuance shuts the listener down.
 - Enforce dns-persist wildcard policy from the ACME authorization flag while
   retaining base-domain and alias lookups.
+- Reissue certificates when their actual SAN set or known configured issuer
+  changes, while preserving valid configured failover and imported certificates.
 
 ## [0.2.1] - 2026-10-02
 

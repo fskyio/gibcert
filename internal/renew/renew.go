@@ -19,10 +19,13 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/localca"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
@@ -35,10 +38,22 @@ type Decision struct {
 	NotAfter  time.Time
 }
 
-func ShouldRenew(cert *config.Certificate, store *storage.Store, now time.Time) Decision {
+// ShouldRenew is the shared currentness decision for plan, apply, renew and
+// status commands. SAN or known issuer drift makes even an unexpired leaf due.
+func ShouldRenew(cfg *config.Config, cert *config.Certificate, store *storage.Store, now time.Time) Decision {
 	c, err := LoadLeaf(cert, store)
 	if err != nil {
 		return Decision{Due: true, Reason: "certificate missing or unreadable"}
+	}
+	d := Decision{Reason: "certificate still valid", NotBefore: c.NotBefore, NotAfter: c.NotAfter}
+	if !namesMatch(cert.Names, c) {
+		d.Due, d.Reason = true, "certificate names differ from configuration"
+		return d
+	}
+	meta, _ := store.LoadCertMeta(cert.Name)
+	if issuerChanged(cfg, cert, meta, c) {
+		d.Due, d.Reason = true, "certificate issuer differs from configuration"
+		return d
 	}
 
 	before := RenewalWindow(cert, c.NotBefore, c.NotAfter)
@@ -48,15 +63,106 @@ func ShouldRenew(cert *config.Certificate, store *storage.Store, now time.Time) 
 	if !c.NotAfter.After(now.Add(before)) {
 		return Decision{Due: true, Reason: "certificate inside renewal window", NotBefore: c.NotBefore, NotAfter: c.NotAfter}
 	}
-	d := Decision{Due: false, Reason: "certificate still valid", NotBefore: c.NotBefore, NotAfter: c.NotAfter}
+	if ca, ok, _ := config.LocalCAForCertificate(cfg, cert); ok {
+		if status := localca.CheckCA(ca, store, now); !status.Ready {
+			d.Due, d.Reason = true, status.Reason
+			return d
+		}
+	}
 
 	// ACME Renewal Information can pull renewal earlier than the expiry-based
 	// window. Read the cached suggestion best-effort; absence or errors leave
 	// the expiry-based decision untouched.
-	if meta, err := store.LoadCertMeta(cert.Name); err == nil {
+	if meta != nil {
 		d = ApplyARI(d, meta.ARI, c.SerialNumber.String(), now)
 	}
 	return d
+}
+
+// namesMatch compares SAN sets, never CommonName or metadata's requested names.
+// Wildcards remain literal; IPv4 and IPv6 spellings use net.IP's canonical form.
+func namesMatch(names []string, leaf *x509.Certificate) bool {
+	type nameKey struct {
+		value string
+		ip    bool
+	}
+	actual := make(map[nameKey]bool, len(leaf.DNSNames)+len(leaf.IPAddresses))
+	for _, name := range leaf.DNSNames {
+		actual[nameKey{value: strings.ToLower(name)}] = false
+	}
+	for _, ip := range leaf.IPAddresses {
+		actual[nameKey{value: ip.String(), ip: true}] = false
+	}
+	remaining := len(actual)
+	for _, name := range names {
+		var key nameKey
+		if ip := net.ParseIP(name); ip != nil {
+			key = nameKey{value: ip.String(), ip: true}
+		} else {
+			key = nameKey{value: strings.ToLower(name)}
+		}
+		matched, found := actual[key]
+		if !found {
+			return false
+		}
+		if !matched {
+			actual[key] = true
+			remaining--
+		}
+	}
+	return remaining == 0
+}
+
+func issuerChanged(cfg *config.Config, cert *config.Certificate, meta *storage.CertMeta, leaf *x509.Certificate) bool {
+	// Imported, incomplete or stale metadata cannot establish issuer ownership.
+	// Legacy records with a complete account/directory or local directory still
+	// identify their issuer without requiring newer optional metadata fields.
+	if meta == nil || (meta.SerialNumber != "" && meta.SerialNumber != leaf.SerialNumber.String()) {
+		return false
+	}
+	issuerType := meta.IssuerType
+	if issuerType == "" {
+		if strings.HasPrefix(meta.Directory, "local:") {
+			issuerType = "local"
+		} else if meta.Account != "" && meta.Directory != "" {
+			issuerType = "acme"
+		}
+	}
+	storedCA := meta.CA
+	switch issuerType {
+	case "local":
+		if storedCA == "" && strings.HasPrefix(meta.Directory, "local:") {
+			storedCA = strings.TrimPrefix(meta.Directory, "local:")
+		}
+		if storedCA == "" {
+			return false
+		}
+	case "acme":
+		if meta.Account == "" || meta.Directory == "" {
+			return false
+		}
+	default:
+		return false
+	}
+	ca, local, err := config.LocalCAForCertificate(cfg, cert)
+	if err != nil {
+		return false
+	}
+	if local {
+		return issuerType != "local" || storedCA != ca.Name ||
+			(meta.Directory != "" && meta.Directory != localca.Directory(ca.Name))
+	}
+	issuers, err := config.ACMEIssuersForCertificate(cfg, cert)
+	if err != nil {
+		return false
+	}
+	for _, account := range issuers {
+		if issuerType == "acme" && meta.Account == account.Name && meta.Directory == account.Directory &&
+			(meta.CA == "" || meta.CA == account.CA) {
+			return false
+		}
+	}
+	return true
 }
 
 // RenewalWindow returns the configured renewal window, or a lifetime-aware

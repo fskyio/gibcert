@@ -539,7 +539,7 @@ func dnsPersistContext(cfg *config.Config, store *storage.Store, certName string
 	if err != nil {
 		return nil, nil, "", "", err
 	}
-	account, err := acmeAccountForCert(cfg, cert)
+	account, err := config.ACMEAccountForCertificate(cfg, cert)
 	if err != nil {
 		return nil, nil, "", "", err
 	}
@@ -795,7 +795,7 @@ func tlsaMetaDefaults(cfg *config.Config, cert *config.Certificate) (storage.Cer
 		Name:  cert.Name,
 		Names: append([]string(nil), cert.Names...),
 	}
-	if ca, ok, err := localCAForCert(cfg, cert); err != nil {
+	if ca, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 		return meta, err
 	} else if ok {
 		meta.CA = ca.Name
@@ -803,7 +803,7 @@ func tlsaMetaDefaults(cfg *config.Config, cert *config.Certificate) (storage.Cer
 		meta.Directory = localca.Directory(ca.Name)
 		return meta, nil
 	}
-	account, err := acmeAccountForCert(cfg, cert)
+	account, err := config.ACMEAccountForCertificate(cfg, cert)
 	if err != nil {
 		return meta, err
 	}
@@ -899,35 +899,6 @@ func findCA(cfg *config.Config, name string) (*config.CA, error) {
 		return ca, nil
 	}
 	return nil, fmt.Errorf("ca %q not in config", name)
-}
-
-func acmeAccountForCert(cfg *config.Config, cert *config.Certificate) (*config.Account, error) {
-	if cert.Account != "" {
-		return findAccount(cfg, cert.Account)
-	}
-	ca, err := findCA(cfg, cert.CA)
-	if err != nil {
-		return nil, err
-	}
-	if ca.Type != "acme" {
-		return nil, fmt.Errorf("certificate %q uses %s ca %q, not acme", cert.Name, ca.Type, ca.Name)
-	}
-	return &config.Account{
-		Name:      config.ImplicitACMEAccountName(ca.Name),
-		CA:        ca.Name,
-		Directory: ca.Directory,
-	}, nil
-}
-
-func localCAForCert(cfg *config.Config, cert *config.Certificate) (*config.CA, bool, error) {
-	if cert.CA == "" {
-		return nil, false, nil
-	}
-	ca, err := findCA(cfg, cert.CA)
-	if err != nil {
-		return nil, false, err
-	}
-	return ca, ca.Type == "local", nil
 }
 
 func cmdCheck(p *paths.Paths) int {
@@ -1056,7 +1027,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 		if cert.Account != "" || cert.CA == "" {
 			continue
 		}
-		ca, _, err := localCAForCert(cfg, cert)
+		ca, _, err := config.LocalCAForCertificate(cfg, cert)
 		if err != nil {
 			logError(err)
 			return 1
@@ -1064,7 +1035,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 		if ca == nil || ca.Type != "acme" {
 			continue
 		}
-		account, err := acmeAccountForCert(cfg, cert)
+		account, err := config.ACMEAccountForCertificate(cfg, cert)
 		if err != nil {
 			logError(err)
 			return 1
@@ -1089,7 +1060,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 			failed = true
 			continue
 		}
-		d := issueDecision(cfg, store, cert, time.Now())
+		d := renew.ShouldRenew(cfg, cert, store, time.Now())
 		if d.Due {
 			if err := issueConfiguredCert(ctx, store, cfg, cert, clients, acmeclient.IssueOptions{}); err != nil {
 				logError(fmt.Errorf("%s: %w", cert.Name, err))
@@ -1340,7 +1311,7 @@ func cmdRenew(p *paths.Paths, args []string) int {
 		var due []dueCert
 		now := time.Now()
 		for _, cert := range cfg.Certificates {
-			d := issueDecision(cfg, store, cert, now)
+			d := renew.ShouldRenew(cfg, cert, store, now)
 			if d.Due {
 				due = append(due, dueCert{cert: cert, decision: d})
 			} else if verbose && printSkipped {
@@ -1428,7 +1399,7 @@ func cmdRenew(p *paths.Paths, args []string) int {
 			return 1
 		}
 
-		dc.decision = issueDecision(cfg, store, cert, time.Now())
+		dc.decision = renew.ShouldRenew(cfg, cert, store, time.Now())
 		if !dc.decision.Due {
 			if verbose {
 				fmt.Printf("%s: no longer due\n", cert.Name)
@@ -1529,7 +1500,7 @@ func acmeAccountOptions(account *config.Account) acmeclient.AccountOptions {
 }
 
 func issueConfiguredCert(ctx context.Context, store *storage.Store, cfg *config.Config, cert *config.Certificate, clients map[string]*acmeClientEntry, opts acmeclient.IssueOptions) error {
-	if ca, ok, err := localCAForCert(cfg, cert); err != nil {
+	if ca, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 		return err
 	} else if ok {
 		return localca.Issue(cert, ca, store, localca.IssueOptions{
@@ -1537,7 +1508,7 @@ func issueConfiguredCert(ctx context.Context, store *storage.Store, cfg *config.
 			NewKey: opts.NewKey,
 		})
 	}
-	issuers, err := acmeIssuersForCert(cfg, cert)
+	issuers, err := config.ACMEIssuersForCertificate(cfg, cert)
 	if err != nil {
 		return err
 	}
@@ -1555,44 +1526,6 @@ func issueConfiguredCert(ctx context.Context, store *storage.Store, cfg *config.
 		}
 		return acmeclient.Issue(ctx, client, cert, store, cfg, o)
 	})
-}
-
-// acmeIssuersForCert resolves the certificate's primary ACME issuer followed by
-// its configured failover issuers, in priority order.
-func acmeIssuersForCert(cfg *config.Config, cert *config.Certificate) ([]*config.Account, error) {
-	primary, err := acmeAccountForCert(cfg, cert)
-	if err != nil {
-		return nil, err
-	}
-	issuers := []*config.Account{primary}
-	for _, iss := range cert.Failover {
-		account, err := acmeIssuerAccount(cfg, iss)
-		if err != nil {
-			return nil, fmt.Errorf("failover: %w", err)
-		}
-		issuers = append(issuers, account)
-	}
-	return issuers, nil
-}
-
-// acmeIssuerAccount resolves a single failover issuer to an ACME account,
-// mirroring how a certificate's primary account or ca reference is resolved.
-func acmeIssuerAccount(cfg *config.Config, iss config.Issuer) (*config.Account, error) {
-	if iss.Account != "" {
-		return findAccount(cfg, iss.Account)
-	}
-	ca, err := findCA(cfg, iss.CA)
-	if err != nil {
-		return nil, err
-	}
-	if ca.Type != "acme" {
-		return nil, fmt.Errorf("ca %q is %s, want acme", ca.Name, ca.Type)
-	}
-	return &config.Account{
-		Name:      config.ImplicitACMEAccountName(ca.Name),
-		CA:        ca.Name,
-		Directory: ca.Directory,
-	}, nil
 }
 
 // issueWithFailover tries each issuer in order, stopping at the first success.
@@ -1618,7 +1551,7 @@ func issueWithFailover(out io.Writer, certName string, issuers []*config.Account
 }
 
 // refreshARI updates cached ACME Renewal Information for certificates that are
-// not already due by expiry, honoring each CA's Retry-After. It is best-effort:
+// not already due, honoring each CA's Retry-After. It is best-effort:
 // any per-certificate failure is logged (verbose only) and skipped, so a CA
 // without ARI support or a transient network error never blocks renewal. The
 // refreshed state is read later by renew.ShouldRenew without further network
@@ -1626,10 +1559,10 @@ func issueWithFailover(out io.Writer, certName string, issuers []*config.Account
 func refreshARI(ctx context.Context, cfg *config.Config, store *storage.Store, clients map[string]*acmeClientEntry, verbose bool) {
 	now := time.Now()
 	for _, cert := range cfg.Certificates {
-		if _, ok, _ := localCAForCert(cfg, cert); ok {
+		if _, ok, _ := config.LocalCAForCertificate(cfg, cert); ok {
 			continue // local CAs have no ARI
 		}
-		if renew.ShouldRenew(cert, store, now).Due {
+		if renew.ShouldRenew(cfg, cert, store, now).Due {
 			continue // already due; ARI can only pull renewal earlier
 		}
 		leaf, err := renew.LoadLeaf(cert, store)
@@ -1640,7 +1573,7 @@ func refreshARI(ctx context.Context, cfg *config.Config, store *storage.Store, c
 		if meta, err := store.LoadCertMeta(cert.Name); err == nil && ariFresh(meta.ARI, serial, now) {
 			continue // still within the server's Retry-After window
 		}
-		account, err := acmeAccountForCert(cfg, cert)
+		account, err := config.ACMEAccountForCertificate(cfg, cert)
 		if err != nil {
 			continue
 		}
@@ -1694,21 +1627,6 @@ func ariFresh(ari *storage.CertARI, serial string, now time.Time) bool {
 	return ari.RetryAfter != nil && now.Before(*ari.RetryAfter)
 }
 
-func issueDecision(cfg *config.Config, store *storage.Store, cert *config.Certificate, now time.Time) renew.Decision {
-	d := renew.ShouldRenew(cert, store, now)
-	if d.Due {
-		return d
-	}
-	if ca, ok, _ := localCAForCert(cfg, cert); ok {
-		st := localca.CheckCA(ca, store, now)
-		if !st.Ready {
-			d.Due = true
-			d.Reason = st.Reason
-		}
-	}
-	return d
-}
-
 func usesManualDNS(cfg *config.Config, cert *config.Certificate) bool {
 	if cert.Challenge.Type != "dns-01" {
 		return false
@@ -1721,7 +1639,7 @@ func shouldJitterBeforeRenewal(cfg *config.Config, cert *config.Certificate, noJ
 	if noJitter || maxJitter <= 0 {
 		return false, nil
 	}
-	if _, ok, err := localCAForCert(cfg, cert); err != nil {
+	if _, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 		return false, err
 	} else if ok {
 		return false, nil
@@ -1756,12 +1674,12 @@ func resolveCertIdentity(cfg *config.Config, store *storage.Store, name string) 
 		}
 		if cfg != nil {
 			if cert, err := findCert(cfg, name); err == nil {
-				if ca, ok, err := localCAForCert(cfg, cert); err != nil {
+				if ca, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 					return certIdentity{}, err
 				} else if ok {
 					return certIdentity{}, fmt.Errorf("certificate %q uses local ca %q and cannot be revoked via ACME", name, ca.Name)
 				}
-				if account, err := acmeAccountForCert(cfg, cert); err == nil {
+				if account, err := config.ACMEAccountForCertificate(cfg, cert); err == nil {
 					id.account = account.Name
 					id.directory = account.Directory
 				}
@@ -1782,12 +1700,12 @@ func resolveCertIdentity(cfg *config.Config, store *storage.Store, name string) 
 	if err != nil {
 		return certIdentity{}, err
 	}
-	if ca, ok, err := localCAForCert(cfg, cert); err != nil {
+	if ca, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 		return certIdentity{}, err
 	} else if ok {
 		return certIdentity{}, fmt.Errorf("certificate %q uses local ca %q and cannot be revoked via ACME", name, ca.Name)
 	}
-	account, err := acmeAccountForCert(cfg, cert)
+	account, err := config.ACMEAccountForCertificate(cfg, cert)
 	if err != nil {
 		return certIdentity{}, err
 	}
@@ -2077,7 +1995,7 @@ func cmdList(p *paths.Paths, args []string) int {
 	if cfg != nil {
 		for _, cert := range cfg.Certificates {
 			configNames[cert.Name] = struct{}{}
-			d := issueDecision(cfg, store, cert, now)
+			d := renew.ShouldRenew(cfg, cert, store, now)
 			meta, metaErr := loadCertMetaSoft(store, cert.Name)
 			status := certificateStatusLabel(d, meta, metaErr)
 			expires := formatInstant(d.NotAfter)
@@ -2186,11 +2104,11 @@ func cmdShow(p *paths.Paths, args []string) int {
 		return cmdShowOrphaned(store, args[0])
 	}
 	meta, metaErr := loadCertMetaSoft(store, cert.Name)
-	d := issueDecision(cfg, store, cert, time.Now())
+	d := renew.ShouldRenew(cfg, cert, store, time.Now())
 	fmt.Printf("certificate: %s\n", cert.Name)
 	if cert.Account != "" {
 		fmt.Printf("account:     %s\n", cert.Account)
-		if account, err := acmeAccountForCert(cfg, cert); err == nil && account.Directory != "" {
+		if account, err := config.ACMEAccountForCertificate(cfg, cert); err == nil && account.Directory != "" {
 			fmt.Printf("directory:   %s\n", account.Directory)
 		}
 	} else if cert.CA != "" {
@@ -2219,7 +2137,7 @@ func cmdShow(p *paths.Paths, args []string) int {
 	if cert.PreferredChain != "" {
 		fmt.Printf("chain:       prefer %s\n", cert.PreferredChain)
 	}
-	if ca, ok, _ := localCAForCert(cfg, cert); ok {
+	if ca, ok, _ := config.LocalCAForCertificate(cfg, cert); ok {
 		validFor := cert.ValidFor
 		if validFor == 0 {
 			validFor = config.DefaultLocalCertValidFor
@@ -2367,7 +2285,7 @@ func orphanedIssuerSummary(meta *storage.CertMeta) string {
 }
 
 func issuerSummary(cfg *config.Config, cert *config.Certificate, meta *storage.CertMeta) string {
-	if ca, ok, _ := localCAForCert(cfg, cert); ok {
+	if ca, ok, _ := config.LocalCAForCertificate(cfg, cert); ok {
 		return "local:" + ca.Name
 	}
 	if cert.Account != "" {

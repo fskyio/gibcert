@@ -352,9 +352,9 @@ func TestCommandUsageAndIdentityHelpers(t *testing.T) {
 	if _, err := findACMEAccount(cfg, "ca:dev"); err == nil {
 		t.Fatal("findACMEAccount accepted local CA")
 	}
-	account, err = acmeAccountForCert(cfg, &config.Certificate{Name: "example.com", CA: "letsencrypt"})
+	account, err = config.ACMEAccountForCertificate(cfg, &config.Certificate{Name: "example.com", CA: "letsencrypt"})
 	if err != nil || account.Name != "ca:letsencrypt" {
-		t.Fatalf("acmeAccountForCert got account=%#v err=%v", account, err)
+		t.Fatalf("ACMEAccountForCertificate got account=%#v err=%v", account, err)
 	}
 	if usesManualDNS(cfg, &config.Certificate{Challenge: config.ChallengeSpec{Type: "dns-01", Provider: "manual"}}) != true {
 		t.Fatal("usesManualDNS did not detect manual provider")
@@ -438,8 +438,8 @@ func TestCommandStatusHelpers(t *testing.T) {
 	if ariFresh(&storage.CertARI{Serial: "other", RetryAfter: &retryAfter}, serial, now) {
 		t.Fatal("ariFresh returned true for mismatched serial")
 	}
-	if d := issueDecision(cfg, storage.New(t.TempDir()), &config.Certificate{Name: "local", CA: "dev"}, now); !d.Due || d.Reason == "" {
-		t.Fatalf("local issueDecision got %#v", d)
+	if d := renew.ShouldRenew(cfg, &config.Certificate{Name: "local", CA: "dev"}, storage.New(t.TempDir()), now); !d.Due || d.Reason == "" {
+		t.Fatalf("local ShouldRenew got %#v", d)
 	}
 
 	pl := plan.Plan{Actions: []plan.Action{{Subject: "certificate example.com", Verb: "issue"}}}
@@ -558,4 +558,104 @@ func captureCommand(t *testing.T, fn func() int) (stdout, stderr string, code in
 	_ = outR.Close()
 	_ = errR.Close()
 	return string(outBytes), string(errBytes), code
+}
+
+func TestApplyReconcilesCertificateIdentity(t *testing.T) {
+	p := localConfigPaths(t)
+	store := storage.New(p.State)
+	writeConfig := func(ca string, names string) {
+		t.Helper()
+		src := fmt.Sprintf(`
+ca dev {
+  type local
+  common-name "dev CA"
+}
+ca other {
+  type local
+  common-name "other CA"
+}
+certificate example.com {
+  ca %s
+  names %s
+}`, ca, names)
+		if err := os.WriteFile(p.Config, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply := func() {
+		t.Helper()
+		if out, errOut, code := captureCommand(t, func() int { return cmdApply(p, []string{"--yes"}) }); code != 0 {
+			t.Fatalf("apply code=%d stdout=%q stderr=%q", code, out, errOut)
+		}
+	}
+	writeConfig("dev", "example.com www.example.com")
+	apply()
+	for _, tc := range []struct {
+		name       string
+		ca         string
+		names      string
+		wantNames  []string
+		wantChange bool
+	}{
+		{"reordered names", "dev", "www.example.com example.com", []string{"example.com", "www.example.com"}, false},
+		{"added name", "dev", "example.com www.example.com api.example.com", []string{"example.com", "www.example.com", "api.example.com"}, true},
+		{"removed name", "dev", "example.com api.example.com", []string{"example.com", "api.example.com"}, true},
+		{"changed local CA", "other", "example.com api.example.com", []string{"example.com", "api.example.com"}, true},
+		{"unchanged issuer", "other", "api.example.com example.com", []string{"example.com", "api.example.com"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, err := renew.LoadLeaf(&config.Certificate{Name: "example.com"}, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeConfig(tc.ca, tc.names)
+			cfg, err := loadCfg(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pl, err := plan.Compute(cfg, store, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacesLeaf := false
+			for _, action := range pl.Actions {
+				if action.Subject == "certificate example.com" {
+					replacesLeaf = true
+				}
+			}
+			if replacesLeaf != tc.wantChange {
+				t.Fatalf("plans replacement=%v, want %v", replacesLeaf, tc.wantChange)
+			}
+			apply()
+			after, err := renew.LoadLeaf(cfg.Certificates[0], store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed := before.SerialNumber.Cmp(after.SerialNumber) != 0; changed != tc.wantChange {
+				t.Fatalf("leaf replaced=%v, want %v", changed, tc.wantChange)
+			}
+			if len(after.DNSNames) != len(tc.wantNames) {
+				t.Fatalf("leaf names=%v, want %v", after.DNSNames, tc.wantNames)
+			}
+			for _, want := range tc.wantNames {
+				found := false
+				for _, name := range after.DNSNames {
+					found = found || name == want
+				}
+				if !found {
+					t.Fatalf("leaf missing %s: %v", want, after.DNSNames)
+				}
+			}
+			if after.Issuer.CommonName != tc.ca+" CA" {
+				t.Fatalf("leaf issuer=%s, want %s CA", after.Issuer.CommonName, tc.ca)
+			}
+			pl, err = plan.Compute(cfg, store, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !pl.Empty() {
+				t.Fatalf("replacement did not converge: %#v", pl.Actions)
+			}
+		})
+	}
 }
