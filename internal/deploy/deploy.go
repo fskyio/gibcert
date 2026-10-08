@@ -239,12 +239,36 @@ func deployRecordCurrent(meta *storage.CertMeta, rec storage.CertDeployMeta) boo
 	return false
 }
 
+// DesiredMode preserves public-file modes but never inherits group or other
+// access for private keys. Group access requires an explicit deploy mode.
+func DesiredMode(defaultMode fs.FileMode, existing os.FileInfo, d *config.Deploy) (fs.FileMode, error) {
+	if d.Mode != nil {
+		mode := *d.Mode
+		if defaultMode == 0o600 && mode&0o117 != 0 {
+			return 0, fmt.Errorf("private-key mode must not permit other access or execution, got %#o", mode)
+		}
+		return mode, nil
+	}
+	if existing == nil {
+		return defaultMode, nil
+	}
+	mode := existing.Mode().Perm()
+	if defaultMode == 0o600 {
+		mode &= 0o600
+	}
+	return mode, nil
+}
+
 func installFile(dst string, data []byte, defaultMode fs.FileMode, d *config.Deploy, out io.Writer) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return false, err
 	}
 
 	existing, statErr := os.Stat(dst)
+	mode, err := DesiredMode(defaultMode, existing, d)
+	if err != nil {
+		return false, err
+	}
 	if statErr == nil {
 		existingData, err := os.ReadFile(dst)
 		if err == nil && bytes.Equal(hash(existingData), hash(data)) {
@@ -255,12 +279,7 @@ func installFile(dst string, data []byte, defaultMode fs.FileMode, d *config.Dep
 		}
 	}
 
-	mode := defaultMode
-	if d.Mode != nil {
-		mode = *d.Mode
-	} else if statErr == nil {
-		mode = existing.Mode().Perm()
-	} else {
+	if d.Mode == nil && statErr != nil {
 		fmt.Fprintf(out, "warning: %s: creating with default mode %#o (set deploy.mode to silence)\n", dst, mode)
 	}
 
@@ -304,9 +323,9 @@ func fileContentChanged(dst string, data []byte) (bool, error) {
 }
 
 func applyAttrs(path string, existing os.FileInfo, defaultMode fs.FileMode, d *config.Deploy, out io.Writer) error {
-	desiredMode := existing.Mode().Perm()
-	if d.Mode != nil {
-		desiredMode = *d.Mode
+	desiredMode, err := DesiredMode(defaultMode, existing, d)
+	if err != nil {
+		return err
 	}
 	if existing.Mode().Perm() != desiredMode {
 		if err := os.Chmod(path, desiredMode); err != nil {

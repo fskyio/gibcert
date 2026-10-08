@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -175,6 +176,8 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.applyGroups()...)
 
 	seenCert := map[string]bool{}
+	type destination struct{ certificate, deploy, kind string }
+	destinations := map[string]destination{}
 	for _, cert := range c.Certificates {
 		if err := ValidateStateName(cert.Name); err != nil {
 			errs = append(errs, fmt.Errorf("certificate %q: invalid name: %w", cert.Name, err))
@@ -245,6 +248,20 @@ func (c *Config) Validate() error {
 			seenDeploy[d.Name] = true
 			if err := validateDeploy(d); err != nil {
 				errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %w", cert.Name, d.Name, err))
+			}
+			for _, output := range []struct{ kind, path string }{
+				{"cert", d.Cert}, {"chain", d.Chain}, {"fullchain", d.Fullchain},
+				{"key", d.Key}, {"cert-der", d.CertDER}, {"key-der", d.KeyDER},
+			} {
+				if output.path == "" {
+					continue
+				}
+				path := filepath.Clean(output.path)
+				if previous, ok := destinations[path]; ok {
+					errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %s destination %q collides with certificate %q deploy %q %s", cert.Name, d.Name, output.kind, path, previous.certificate, previous.deploy, previous.kind))
+				} else {
+					destinations[path] = destination{cert.Name, d.Name, output.kind}
+				}
 			}
 		}
 
@@ -568,6 +585,9 @@ func validateDeploy(d *Deploy) error {
 		if p.val != "" && !strings.HasPrefix(p.val, "/") {
 			return fmt.Errorf("%s: must be an absolute path, got %q", p.name, p.val)
 		}
+	}
+	if (d.Key != "" || d.KeyDER != "") && d.Mode != nil && *d.Mode&0o117 != 0 {
+		return fmt.Errorf("private-key mode must not permit other access or execution, got %#o", *d.Mode)
 	}
 	return nil
 }

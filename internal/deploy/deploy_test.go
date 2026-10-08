@@ -16,8 +16,10 @@
 package deploy
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -383,5 +385,85 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("%s mode got %#o, want %#o", path, got, want)
+	}
+}
+
+func TestDeployPrivateKeyModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not available on Windows")
+	}
+	for _, der := range []bool{false, true} {
+		for _, tc := range []struct {
+			name      string
+			unchanged bool
+			explicit  os.FileMode
+			wantMode  os.FileMode
+			wantError bool
+		}{
+			{name: "changed inherited", wantMode: 0o600},
+			{name: "unchanged inherited", unchanged: true, wantMode: 0o600},
+			{name: "explicit group read", explicit: 0o640, wantMode: 0o640},
+			{name: "unsafe explicit", explicit: 0o644, wantError: true},
+		} {
+			t.Run(tc.name+map[bool]string{false: " PEM", true: " DER"}[der], func(t *testing.T) {
+				root := t.TempDir()
+				store := storage.New(filepath.Join(root, "state"))
+				writeCanonical(t, store, "service")
+				key, err := storage.GenerateKey(config.KeySpec{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := storage.WriteKey(store.CertPaths("service").Key, key); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(store.CertPaths("service").Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				d := &config.Deploy{Name: "local"}
+				dst := filepath.Join(root, "key")
+				if der {
+					d.KeyDER = dst
+					data, err = KeyPEMToDER(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					d.Key = dst
+				}
+				if tc.explicit != 0 {
+					d.Mode = &tc.explicit
+				}
+				previous := []byte("old key")
+				if tc.unchanged {
+					previous = data
+				}
+				if err := os.WriteFile(dst, previous, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dst, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				_, err = Deploy(&config.Certificate{Name: "service", Deploys: []*config.Deploy{d}}, store, os.Stdout)
+				got, readErr := os.ReadFile(dst)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if tc.wantError {
+					if err == nil || !bytes.Equal(got, previous) {
+						t.Fatalf("unsafe deployment: error %v, destination changed %v", err, !bytes.Equal(got, previous))
+					}
+					assertMode(t, dst, 0o644)
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(got, data) {
+						t.Fatal("deployed private key differs from canonical material")
+					}
+					assertMode(t, dst, tc.wantMode)
+				}
+			})
+		}
 	}
 }

@@ -425,7 +425,8 @@ Owner for deployed files.
 Group for deployed files.
 .TP
 .B mode \fIMODE\fR
-File mode for deployed files. Must be 0777 or lower.
+File mode for deployed files. Must be 0777 or lower. Targets containing key or
+key-der must not grant other access or execute permission.
 .TP
 .B before \fICOMMAND\fR
 Command to run through the platform shell before changed material is deployed.
@@ -434,7 +435,13 @@ Command to run through the platform shell before changed material is deployed.
 Command to run through the platform shell after changed material is deployed.
 .PP
 At least one of cert, chain, fullchain, key, cert-der, or key-der must be set.
-All deploy paths must be absolute.
+All deploy paths must be absolute and must not collide with another configured
+output after path normalization.
+.PP
+New public files default to 0644; new private keys default to 0600. Without an
+explicit mode, existing public-file modes are preserved and existing private-key
+modes are restricted to owner read/write bits, even when content is unchanged.
+Use an explicit mode such as 0640 for intentional group access.
 .SH TLSA
 .TP
 .B tlsa { ... }

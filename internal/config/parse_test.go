@@ -1250,3 +1250,49 @@ func equalSlices(a, b []string) bool {
 	}
 	return true
 }
+
+func TestDeployRejectsCollidingDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		deploys []*Deploy
+		second  *Deploy
+	}{
+		{"cert and key", []*Deploy{{Name: "local", Cert: "/tmp/cert.pem", Key: "/tmp/cert.pem"}}, nil},
+		{"normalized paths", []*Deploy{{Name: "local", Cert: "/tmp/cert.pem", Key: "/tmp/dir/../cert.pem"}}, nil},
+		{"different targets", []*Deploy{{Name: "first", Cert: "/tmp/cert.pem"}, {Name: "second", Fullchain: "/tmp/cert.pem"}}, nil},
+		{"different certificates", []*Deploy{{Name: "local", Key: "/tmp/key.pem"}}, &Deploy{Name: "local", KeyDER: "/tmp/key.pem"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				CAs:          []*CA{{Name: "dev", Type: "local"}},
+				Certificates: []*Certificate{{Name: "first", CA: "dev", Names: []string{"first.example"}, Deploys: tc.deploys}},
+			}
+			if tc.second != nil {
+				cfg.Certificates = append(cfg.Certificates, &Certificate{Name: "second", CA: "dev", Names: []string{"second.example"}, Deploys: []*Deploy{tc.second}})
+			}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "collides") {
+				t.Fatalf("Validate = %v, want colliding destination error", err)
+			}
+		})
+	}
+}
+
+func TestDeployRejectsUnsafePrivateKeyModes(t *testing.T) {
+	for _, mode := range []fs.FileMode{0o644, 0o604, 0o601, 0o700, 0o610} {
+		for _, der := range []bool{false, true} {
+			d := &Deploy{Name: "local", Mode: &mode}
+			if der {
+				d.KeyDER = "/tmp/key.der"
+			} else {
+				d.Key = "/tmp/key.pem"
+			}
+			cfg := &Config{
+				CAs:          []*CA{{Name: "dev", Type: "local"}},
+				Certificates: []*Certificate{{Name: "service", CA: "dev", Names: []string{"service.example"}, Deploys: []*Deploy{d}}},
+			}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "private-key mode") {
+				t.Fatalf("mode %#o, DER %v: Validate = %v, want private-key mode error", mode, der, err)
+			}
+		}
+	}
+}

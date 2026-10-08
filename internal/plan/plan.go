@@ -372,11 +372,9 @@ func plannedFileChanges(dst, name string, data []byte, defaultMode os.FileMode, 
 		}
 	}
 
-	desiredMode := info.Mode().Perm()
-	if d.Mode != nil {
-		desiredMode = *d.Mode
-	} else if !info.Mode().IsRegular() {
-		desiredMode = defaultMode
+	desiredMode, err := deploy.DesiredMode(defaultMode, info, d)
+	if err != nil {
+		return nil, err
 	}
 	if info.Mode().Perm() != desiredMode {
 		changes = append(changes, fmt.Sprintf("%s chmod %#o", name, desiredMode))

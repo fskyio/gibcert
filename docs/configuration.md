@@ -715,13 +715,13 @@ Directives:
 | `key-der PATH` | Private key destination in binary DER (the on-disk PKCS#8 encoding, unarmored). |
 | `owner NAME` | Owner to set on deployed files. Requires privileges. |
 | `group NAME` | Group to set on deployed files. Requires privileges. |
-| `mode MODE` | File mode for deployed files, such as `0640`. Must be `0777` or lower. |
+| `mode MODE` | File mode for deployed files, such as `0640`. Must be `0777` or lower. Targets containing a private key must not grant other access or execute permission. |
 | `before COMMAND` | Command to run before changed material is deployed. Runs through the platform shell: `sh -c` on Unix-like systems, `cmd /C` on Windows, and `rc -c` on Plan 9. |
 | `after COMMAND` | Command to run after changed material is deployed. Runs through the platform shell: `sh -c` on Unix-like systems, `cmd /C` on Windows, and `rc -c` on Plan 9. |
 
-At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` must be set. All deploy paths must be absolute. The DER targets emit the same material as `cert` and `key` in binary DER form; `chain`/`fullchain` have no DER form because concatenated DER certificates are not a portable format.
+At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` must be set. All deploy paths must be absolute and must not collide with any other output path in the configuration, including after path normalization. The DER targets emit the same material as `cert` and `key` in binary DER form; `chain`/`fullchain` have no DER form because concatenated DER certificates are not a portable format.
 
-By default, new certificate files are created with mode `0644` and new private key files are created with mode `0600`. If a destination already exists and `mode` is omitted, gibcert preserves the existing mode.
+By default, new certificate files are created with mode `0644` and new private key files are created with mode `0600`. Existing public-file modes are preserved when `mode` is omitted. Inherited private-key modes are restricted to owner read/write bits, including when content is already current. Set an explicit mode such as `0640` to allow intentional group access; other access and execute permission are rejected for targets containing `key` or `key-der`.
 
 Deploy writes files atomically and only reports a file as changed when content differs. Ownership and mode are still reconciled when content is already current.
 
