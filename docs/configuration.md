@@ -621,7 +621,9 @@ For DNS providers with `propagation provider`, gibcert assumes the provider wait
 
 ### Standalone listeners (`http-01` and `tls-alpn-01`)
 
-`listen` makes gibcert bind a short-lived TCP listener during the challenge instead of relying on an external web server. The listener is closed as soon as the order is finalized. Binding `:80` or `:443` typically needs root or `CAP_NET_BIND_SERVICE`.
+`listen` makes gibcert bind a short-lived TCP listener during issuance instead of relying on an external web server. The listener is closed when the issuance attempt returns, whether it succeeds, fails, or is canceled. Binding `:80` or `:443` typically needs root or `CAP_NET_BIND_SERVICE`.
+
+The TLS-ALPN-01 listener serves all authorizations in the issuance attempt. Each TLS handshake has a fixed 10-second read/write deadline, and at most 64 handshakes are admitted concurrently; excess connections are immediately closed. Cleanup force-closes active TLS transports and waits for their workers before issuance returns.
 
 ### DNS alias mode
 

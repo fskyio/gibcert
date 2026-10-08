@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to owner access; intentional group access requires an explicit safe mode.
 - Validate complete ACME certificate responses against the requested key, names,
   and validity before replacing canonical material or promoting staged keys.
+- Bound standalone TLS-ALPN handshake time and concurrency, and close accepted
+  transports and drain workers when issuance shuts the listener down.
 
 ## [0.2.1] - 2026-10-02
 

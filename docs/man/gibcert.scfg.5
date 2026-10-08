@@ -382,7 +382,12 @@ requires root or CAP_NET_BIND_SERVICE.
 .TP
 .B challenge tls-alpn-01 { listen \fIADDR\fR }
 Use TLS-ALPN-01 with gibcert's built-in standalone TLS listener on the given
-bind address. Required for tls-alpn-01.
+bind address. Required for tls-alpn-01. The listener serves all authorizations
+in an issuance attempt, with a fixed 10-second read/write deadline per TLS
+handshake and at most 64 concurrent handshakes. Excess connections are
+immediately closed. When issuance returns, including on failure or
+cancellation, the listener and active TLS transports are closed and handshake
+workers are drained.
 .TP
 .B challenge dns-01 { provider \fINAME\fR [propagation-timeout \fIDURATION\fR] [alias-fqdn \fIFQDN\fR | alias-domain \fIDOMAIN\fR] }
 Use DNS-01 with the named provider. The default propagation timeout is 120s.

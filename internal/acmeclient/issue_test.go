@@ -20,12 +20,15 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -379,6 +382,182 @@ func TestARIReplaces(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIssueTLSALPNCancellationClosesTransports(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listener address: %v", err)
+	}
+	addr := reserved.Addr().String()
+	_ = reserved.Close()
+
+	challengeReady := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Replay-Nonce", "nonce-value")
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/directory":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"newNonce": srv.URL + "/nonce",
+				"newOrder": srv.URL + "/new-order",
+			})
+		case "/nonce":
+			w.WriteHeader(http.StatusOK)
+		case "/new-order":
+			w.Header().Set("Location", srv.URL+"/order/1")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(acme.Order{
+				Status:         acme.StatusPending,
+				Authorizations: []string{srv.URL + "/authz/1"},
+			})
+		case "/authz/1":
+			_ = json.NewEncoder(w).Encode(acme.Authorization{
+				Status:     acme.StatusPending,
+				Identifier: acme.Identifier{Type: "dns", Value: "example.test"},
+				Challenges: []acme.Challenge{{
+					Type:   acme.ChallengeTypeTLSALPN01,
+					Token:  "token-xyz",
+					URL:    srv.URL + "/challenge/1",
+					Status: acme.StatusPending,
+				}},
+			})
+		case "/challenge/1":
+			close(challengeReady)
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+	client := &Client{
+		acme: newACMEClient(srv.URL+"/directory", srv.Client()),
+		account: acme.Account{
+			Location:   srv.URL + "/acct/1",
+			PrivateKey: key,
+		},
+	}
+	cert := &config.Certificate{
+		Name:  "example.test",
+		Names: []string{"example.test"},
+		Key:   config.KeySpec{Type: "ecdsa", Curve: "p256"},
+		Challenge: config.ChallengeSpec{
+			Type:   "tls-alpn-01",
+			Listen: addr,
+		},
+	}
+	store := storage.New(t.TempDir())
+	issued := make(chan error, 1)
+	go func() {
+		issued <- Issue(ctx, client, cert, store, &config.Config{}, IssueOptions{Out: io.Discard})
+	}()
+	select {
+	case <-challengeReady:
+	case err := <-issued:
+		t.Fatalf("Issue returned before presenting the challenge: %v", err)
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("Issue did not initiate the challenge")
+	}
+
+	transport, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial challenge listener: %v", err)
+	}
+	defer transport.Close()
+	// Send a real ClientHello but withhold the client Finished. Reading the
+	// server response proves the transport is accepted, not just queued.
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	tlsClient := tls.Client(tlsALPNClientHelloOnlyConn{
+		Conn:        transport,
+		readStarted: readStarted,
+		releaseRead: releaseRead,
+	}, &tls.Config{
+		ServerName:         "example.test",
+		NextProtos:         []string{"acme-tls/1"},
+		InsecureSkipVerify: true,
+	})
+	handshake := make(chan error, 1)
+	handshakeDone := make(chan struct{})
+	go func() {
+		handshake <- tlsClient.Handshake()
+		close(handshakeDone)
+	}()
+	defer func() {
+		close(releaseRead)
+		select {
+		case <-handshakeDone:
+		case <-time.After(3 * time.Second):
+			t.Error("ClientHello sender did not exit")
+		}
+	}()
+	select {
+	case <-readStarted:
+	case err := <-handshake:
+		t.Fatalf("send ClientHello: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not send ClientHello")
+	}
+	if err := transport.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set client read deadline: %v", err)
+	}
+	var response [1]byte
+	if _, err := io.ReadFull(transport, response[:]); err != nil {
+		t.Fatalf("server did not begin the accepted handshake: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-issued:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Issue cancellation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Issue waited for the active TLS handshake instead of shutting it down")
+	}
+	if err := transport.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set closure read deadline: %v", err)
+	}
+	var buf [4096]byte
+	for {
+		_, err := transport.Read(buf[:])
+		if err == nil {
+			continue
+		}
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			t.Fatalf("client timed out instead of observing transport closure: %v", err)
+		}
+		break
+	}
+	rebound, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("Issue returned without releasing listener: %v", err)
+	}
+	_ = rebound.Close()
+}
+
+type tlsALPNClientHelloOnlyConn struct {
+	net.Conn
+	readStarted chan struct{}
+	releaseRead <-chan struct{}
+}
+
+func (conn tlsALPNClientHelloOnlyConn) Read([]byte) (int, error) {
+	close(conn.readStarted)
+	<-conn.releaseRead
+	return 0, io.EOF
 }
 
 func TestDNSPersistChallengeExpectations(t *testing.T) {
