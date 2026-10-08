@@ -28,7 +28,7 @@ _gibcert() {
 			_arguments \
 				'--max-jitter[sleep up to duration before each renewal]:duration' \
 				'--no-jitter[disable renewal jitter]' \
-				'--verbose[print renewal activity]'
+				'--verbose[print renewal and deployment activity]'
 			;;
 		account)
 			_arguments '1: :_gibcert_account_subcmds' '*:: :->accountargs'
@@ -177,7 +177,7 @@ _gibcert_commands() {
         'plan:show what apply would change'
         'apply:reconcile state with config'
         'issue:issue one certificate'
-        'renew:renew due certificates and deploy changed material'
+        'renew:renew due certificates and reconcile deployments'
         'account:manage ACME accounts'
         'ca:list, show, or export CA profiles'
         'dns-persist:manage dns-persist-01 standing records'

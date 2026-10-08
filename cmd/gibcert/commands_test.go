@@ -16,11 +16,14 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -655,6 +658,168 @@ certificate example.com {
 			}
 			if !pl.Empty() {
 				t.Fatalf("replacement did not converge: %#v", pl.Actions)
+			}
+		})
+	}
+}
+
+func TestRenewReconcilesCurrentDeployments(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("hook commands use a Unix shell")
+	}
+	for _, failure := range []string{"write failure", "after hook failure", "destination drift"} {
+		t.Run(failure, func(t *testing.T) {
+			p := localConfigPaths(t)
+			root := filepath.Dir(p.Config)
+			fault := filepath.Join(root, "fault")
+			hooks := filepath.Join(root, "hooks")
+			reloads := filepath.Join(root, "reloads")
+			t.Setenv("GIBCERT_TEST_RENEW_FAULT", fault)
+			t.Setenv("GIBCERT_TEST_RENEW_HOOKS", hooks)
+			t.Setenv("GIBCERT_TEST_RENEW_RELOADS", reloads)
+			after := `if test -f "$GIBCERT_TEST_RENEW_FAULT"; then exit 23; fi; printf '%s:%s;' "$GIBCERT_CERT" "$GIBCERT_EVENT" >> "$GIBCERT_TEST_RENEW_HOOKS"`
+			reload := `printf '%s;' "$GIBCERT_CHANGED_CERTS" >> "$GIBCERT_TEST_RENEW_RELOADS"`
+			var src strings.Builder
+			src.WriteString("ca dev {\n  type local\n}\n")
+			for _, name := range []string{"a", "b"} {
+				dir := filepath.Join(root, "deploy", name)
+				fmt.Fprintf(&src, "certificate %s {\n  ca dev\n  names %s.example\n  deploy local {\n    fullchain %s\n    key %s\n    after %q\n  }\n  reload %q\n}\n",
+					name, name, filepath.Join(dir, "fullchain.pem"), filepath.Join(dir, "privkey.pem"), after, reload)
+			}
+			if err := os.WriteFile(p.Config, []byte(src.String()), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadCfg(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := storage.New(p.State)
+			type material struct{ leaf, key []byte }
+			canonical := make(map[string]material)
+			if failure == "after hook failure" {
+				if err := os.WriteFile(fault, []byte("fail"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, cert := range cfg.Certificates {
+				if out, errOut, code := captureCommand(t, func() int { return cmdIssue(p, []string{cert.Name}) }); code != 0 {
+					t.Fatalf("issue: code=%d stdout=%q stderr=%q", code, out, errOut)
+				}
+				paths := store.CertPaths(cert.Name)
+				leaf, err := os.ReadFile(paths.Cert)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := os.ReadFile(paths.Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				canonical[cert.Name] = material{leaf, key}
+				if decision := renew.ShouldRenew(cfg, cert, store, time.Now()); decision.Due {
+					t.Fatalf("fixture is due, not a pending-only deploy: %#v", decision)
+				}
+				d := cert.Deploys[0]
+				if failure == "write failure" {
+					if err := os.MkdirAll(d.Key, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wantCode := 1
+				if failure == "destination drift" {
+					wantCode = 0
+				}
+				if out, errOut, code := captureCommand(t, func() int { return cmdDeploy(p, []string{cert.Name}) }); code != wantCode {
+					t.Fatalf("initial deploy: code=%d want=%d stdout=%q stderr=%q", code, wantCode, out, errOut)
+				}
+				switch failure {
+				case "write failure":
+					if err := os.Remove(d.Key); err != nil {
+						t.Fatal(err)
+					}
+				case "destination drift":
+					for _, path := range []string{d.Fullchain, d.Key} {
+						if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.Chmod(d.Key, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if failure == "after hook failure" {
+				if err := os.Remove(fault); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, log := range []string{hooks, reloads} {
+				if err := os.WriteFile(log, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runRenew := func() {
+				t.Helper()
+				if out, errOut, code := captureCommand(t, func() int { return cmdRenew(p, []string{"--no-jitter", "--verbose"}) }); code != 0 {
+					t.Fatalf("renew: code=%d stdout=%q stderr=%q", code, out, errOut)
+				}
+			}
+			runRenew()
+			for _, cert := range cfg.Certificates {
+				paths := store.CertPaths(cert.Name)
+				leaf, err := os.ReadFile(paths.Cert)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := os.ReadFile(paths.Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(leaf, canonical[cert.Name].leaf) || !bytes.Equal(key, canonical[cert.Name].key) {
+					t.Fatalf("%s was reissued while retrying deployment", cert.Name)
+				}
+				d := cert.Deploys[0]
+				fullchain, err := os.ReadFile(d.Fullchain)
+				if err != nil {
+					t.Fatal(err)
+				}
+				deployedKey, err := os.ReadFile(d.Key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tls.X509KeyPair(fullchain, deployedKey); err != nil {
+					t.Fatalf("%s deployed an invalid cert/key pair: %v", cert.Name, err)
+				}
+				info, err := os.Stat(d.Key)
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("%s private-key mode was not reconciled: %v", cert.Name, err)
+				}
+			}
+			hookLog, err := os.ReadFile(hooks)
+			if err != nil || string(hookLog) != "a:after-deploy;b:after-deploy;" {
+				t.Fatalf("pending success hooks = %q, %v", hookLog, err)
+			}
+			reloadLog, err := os.ReadFile(reloads)
+			wantReload := "a,b;"
+			if failure == "after hook failure" {
+				// Files were already installed; retry the per-target hook without
+				// scheduling a content-change reload again.
+				wantReload = ""
+			}
+			if err != nil || string(reloadLog) != wantReload {
+				t.Fatalf("coalesced reloads = %q, %v; want %q", reloadLog, err, wantReload)
+			}
+			pl, err := plan.Compute(cfg, store, time.Now())
+			if err != nil || !pl.Empty() {
+				t.Fatalf("pending deployment did not converge: %#v, %v", pl, err)
+			}
+			runRenew()
+			againHooks, err := os.ReadFile(hooks)
+			if err != nil || !bytes.Equal(againHooks, hookLog) {
+				t.Fatalf("no-op renewal repeated hooks: %q, %v", againHooks, err)
+			}
+			againReloads, err := os.ReadFile(reloads)
+			if err != nil || !bytes.Equal(againReloads, reloadLog) {
+				t.Fatalf("no-op renewal repeated reloads: %q, %v", againReloads, err)
 			}
 		})
 	}

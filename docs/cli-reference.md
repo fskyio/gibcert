@@ -68,15 +68,17 @@ For ACME certificates, this creates an ACME order and completes the configured c
 
 ### `gibcert renew [--max-jitter DURATION] [--no-jitter] [--verbose]`
 
-Renew due certificates and deploy changed material.
+Renew due certificates and reconcile all configured deploy targets.
 
 A certificate is due when it is missing, unreadable, expired, inside its renewal window, has different configured SANs, or has a known issuer identity no longer accepted by the configuration. A configured local CA that is not ready also makes it due. `plan`, `apply`, `renew`, `list`, and `show` share this decision. SAN comparison ignores order, DNS case, and equivalent IP spellings but treats wildcards exactly. Issuer comparison includes account, CA, issuer type, and ACME directory; a still-configured failover issuer is accepted. Imported certificates and incomplete legacy metadata do not establish issuer ownership. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
+
+Deployment reconciliation also runs for otherwise-current certificates: missing or drifted files and pending per-target success hooks are retried from valid canonical material without reissuance or ACME jitter. The existing metadata, mode, and ownership rules apply. Content changes trigger the usual coalesced reloads; an unchanged target does not reload.
 
 | Flag | Description |
 | --- | --- |
 | `--max-jitter DURATION` | Sleep up to this duration before each ACME renewal. Default is `5m`. |
 | `--no-jitter` | Disable renewal jitter. |
-| `--verbose` | Print skipped, issued, and deployed certificates. |
+| `--verbose` | Print certificate validity, renewal, and deployment activity. |
 
 ### `gibcert account rotate-key <account>`
 

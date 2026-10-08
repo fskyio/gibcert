@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unspecified attribute of an owner-only or group-only override.
 - Stage complete deploy targets before hooks, roll back partial installation,
   and require a recovery hook for before actions that can stop services.
+- Reconcile pending and drifted deployments during scheduled renewal even when
+  certificates remain current, without reissuance or renewal jitter.
 
 ## [0.2.1] - 2026-10-02
 

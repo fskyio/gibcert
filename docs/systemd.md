@@ -2,7 +2,7 @@
 
 The repository includes example systemd units in `contrib/systemd/`.
 
-- `gibcert.service` runs one renewal pass.
+- `gibcert.service` runs one renewal and deployment-reconciliation pass.
 - `gibcert.timer` runs the service daily with additional randomized delay.
 
 ## Install Units
@@ -61,6 +61,8 @@ secret api-key {
 ## Timer Behavior
 
 The example timer runs once per day at 03:17 and has `RandomizedDelaySec=6h`. `gibcert renew` also has its own ACME jitter, with a default maximum of 5 minutes per due certificate.
+
+Each pass also retries pending deployments and success hooks for otherwise-current certificates, without reissuing them. Deployment-only work has no ACME jitter.
 
 The two delays solve different problems:
 

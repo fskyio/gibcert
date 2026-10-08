@@ -106,7 +106,7 @@ Cool, right?
 
 ### What about cron or systemd timers?
 
-`gibcert renew` is all it takes to check all your certs for renewal. You don't need to write an entire shell script for that, like with certain ACME clients.
+`gibcert renew` checks all your certs for renewal and reconciles their deploy targets. A timer run retries failed deployments from valid stored material without issuing another certificate.
 
 Here is an example for running it daily at 2AM with cron:
 

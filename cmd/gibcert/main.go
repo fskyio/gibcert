@@ -54,7 +54,7 @@ commands:
   plan                  show what apply would change
   apply [flags]         reconcile state with config
   issue [flags] <cert>  issue one certificate
-  renew [flags]         renew due certificates and deploy changed material
+  renew [flags]         renew due certificates and reconcile deployments
   account <command>     manage ACME accounts
   ca <command>          list, show, or export CA profiles
   dns-persist <command> manage dns-persist-01 standing records
@@ -1270,7 +1270,7 @@ func cmdRenew(p *paths.Paths, args []string) int {
 	verbose := false
 	fs.DurationVar(&maxJitter, "max-jitter", maxJitter, "sleep up to duration before each ACME renewal")
 	fs.BoolVar(&noJitter, "no-jitter", false, "disable renewal jitter")
-	fs.BoolVar(&verbose, "verbose", false, "print renewal activity")
+	fs.BoolVar(&verbose, "verbose", false, "print renewal and deployment activity")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1303,22 +1303,16 @@ func cmdRenew(p *paths.Paths, args []string) int {
 	refreshARI(ariCtx, cfg, store, clients, verbose)
 	ariCancel()
 
-	type dueCert struct {
-		cert     *config.Certificate
-		decision renew.Decision
+	// Process issuance and deployment work in dependency order so that
+	// requires/wants targets are handled before their dependents.
+	order, err := config.OrderCertificates(cfg.Certificates)
+	if err != nil {
+		logError(err)
+		return 1
 	}
-	collectDue := func(printSkipped bool) []dueCert {
-		var due []dueCert
-		now := time.Now()
-		for _, cert := range cfg.Certificates {
-			d := renew.ShouldRenew(cfg, cert, store, now)
-			if d.Due {
-				due = append(due, dueCert{cert: cert, decision: d})
-			} else if verbose && printSkipped {
-				fmt.Printf("%s: valid until %s\n", cert.Name, d.NotAfter.Format(time.RFC3339))
-			}
-		}
-		return due
+	type renewalWork struct {
+		cert *config.Certificate
+		due  bool
 	}
 
 	lk, err := lock.Acquire(store.LockPath(), 5*time.Second)
@@ -1326,30 +1320,28 @@ func cmdRenew(p *paths.Paths, args []string) int {
 		logError(err)
 		return 1
 	}
-	due := collectDue(true)
+	var work []renewalWork
+	now := time.Now()
+	for _, cert := range order {
+		d := renew.ShouldRenew(cfg, cert, store, now)
+		if d.Due || len(cert.Deploys) != 0 {
+			work = append(work, renewalWork{cert: cert, due: d.Due})
+		}
+		if verbose && !d.Due {
+			fmt.Printf("%s: valid until %s\n", cert.Name, d.NotAfter.Format(time.RFC3339))
+		}
+	}
 	if err := lk.Release(); err != nil {
 		logError(err)
 		return 1
 	}
-	if len(due) == 0 {
+	if len(work) == 0 {
 		if verbose {
-			fmt.Println("no certificates due")
+			fmt.Println("no certificates due or deployments configured")
 		}
 		return 0
 	}
 
-	// Process due certificates in dependency order so that a certificate's
-	// requires/wants targets are handled before it.
-	order, err := config.OrderCertificates(cfg.Certificates)
-	if err != nil {
-		logError(err)
-		return 1
-	}
-	pos := make(map[string]int, len(order))
-	for i, c := range order {
-		pos[c.Name] = i
-	}
-	sort.SliceStable(due, func(i, j int) bool { return pos[due[i].cert.Name] < pos[due[j].cert.Name] })
 	outcomes := map[string]runOutcome{}
 	reloads := newReloadQueue()
 
@@ -1361,8 +1353,8 @@ func cmdRenew(p *paths.Paths, args []string) int {
 		}
 	}
 
-	for _, dc := range due {
-		cert := dc.cert
+	for _, item := range work {
+		cert := item.cert
 
 		if reason := gateReason(cert, outcomes); reason != "" {
 			if verbose {
@@ -1372,25 +1364,27 @@ func cmdRenew(p *paths.Paths, args []string) int {
 			continue
 		}
 
-		jitter, err := shouldJitterBeforeRenewal(cfg, cert, noJitter, maxJitter)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", cert.Name, err))
-			logError(errs[len(errs)-1])
-			outcomes[cert.Name] = runFailed
-			continue
-		}
-		if jitter {
-			sleep, err := randomJitter(maxJitter)
+		if item.due {
+			jitter, err := shouldJitterBeforeRenewal(cfg, cert, noJitter, maxJitter)
 			if err != nil {
-				errs = append(errs, err)
-				logError(err)
+				errs = append(errs, fmt.Errorf("%s: %w", cert.Name, err))
+				logError(errs[len(errs)-1])
 				outcomes[cert.Name] = runFailed
 				continue
 			}
-			if verbose && sleep > 0 {
-				fmt.Printf("%s: sleeping %s before renewal\n", cert.Name, sleep)
+			if jitter {
+				sleep, err := randomJitter(maxJitter)
+				if err != nil {
+					errs = append(errs, err)
+					logError(err)
+					outcomes[cert.Name] = runFailed
+					continue
+				}
+				if verbose && sleep > 0 {
+					fmt.Printf("%s: sleeping %s before renewal\n", cert.Name, sleep)
+				}
+				time.Sleep(sleep)
 			}
-			time.Sleep(sleep)
 		}
 
 		lk, err = lock.Acquire(store.LockPath(), 5*time.Second)
@@ -1399,38 +1393,32 @@ func cmdRenew(p *paths.Paths, args []string) int {
 			return 1
 		}
 
-		dc.decision = renew.ShouldRenew(cfg, cert, store, time.Now())
-		if !dc.decision.Due {
-			if verbose {
-				fmt.Printf("%s: no longer due\n", cert.Name)
-			}
-			outcomes[cert.Name] = runOK
-			releaseLock(lk)
-			continue
-		}
-
-		if verbose {
-			if dc.decision.NotAfter.IsZero() {
-				fmt.Printf("%s: renewing (%s)\n", cert.Name, dc.decision.Reason)
-			} else {
-				fmt.Printf("%s: renewing (%s; expires %s)\n", cert.Name, dc.decision.Reason, dc.decision.NotAfter.Format(time.RFC3339))
-			}
-		}
-
+		decision := renew.ShouldRenew(cfg, cert, store, time.Now())
 		out := io.Discard
-		if verbose || usesManualDNS(cfg, cert) {
+		if verbose || (decision.Due && usesManualDNS(cfg, cert)) {
 			out = os.Stdout
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		if err := issueConfiguredCert(ctx, store, cfg, cert, clients, acmeclient.IssueOptions{Out: out, In: os.Stdin}); err != nil {
+		if decision.Due {
+			if verbose {
+				if decision.NotAfter.IsZero() {
+					fmt.Printf("%s: renewing (%s)\n", cert.Name, decision.Reason)
+				} else {
+					fmt.Printf("%s: renewing (%s; expires %s)\n", cert.Name, decision.Reason, decision.NotAfter.Format(time.RFC3339))
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			if err := issueConfiguredCert(ctx, store, cfg, cert, clients, acmeclient.IssueOptions{Out: out, In: os.Stdin}); err != nil {
+				cancel()
+				errs = append(errs, fmt.Errorf("%s: %w", cert.Name, err))
+				logError(errs[len(errs)-1])
+				outcomes[cert.Name] = runFailed
+				releaseLock(lk)
+				continue
+			}
 			cancel()
-			errs = append(errs, fmt.Errorf("%s: %w", cert.Name, err))
-			logError(errs[len(errs)-1])
-			outcomes[cert.Name] = runFailed
-			releaseLock(lk)
-			continue
+		} else if verbose && item.due {
+			fmt.Printf("%s: no longer due; reconciling deployment\n", cert.Name)
 		}
-		cancel()
 
 		results, err := deploy.Deploy(cert, store, out)
 		if err != nil {
@@ -1455,8 +1443,8 @@ func cmdRenew(p *paths.Paths, args []string) int {
 		outcomes[cert.Name] = runOK
 		releaseLock(lk)
 	}
-	// Coalesced reloads run once, after every renewal in this run has been
-	// deployed (outside the per-certificate locks).
+	// Coalesced reloads run once, after issuance and deployment work completes
+	// (outside the per-certificate locks).
 	errs = append(errs, reloads.flush(verbose)...)
 	if len(errs) > 0 {
 		return 1

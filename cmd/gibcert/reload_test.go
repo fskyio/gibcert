@@ -53,25 +53,3 @@ func TestAnyChangedReportsRotation(t *testing.T) {
 		t.Errorf("a changed deploy should report true")
 	}
 }
-
-// Only certs whose deploys changed enqueue their reload, mirroring how the run
-// loops gate enqueue on anyChanged(results).
-func TestReloadOnlyEnqueuedOnChange(t *testing.T) {
-	q := newReloadQueue()
-	type step struct {
-		cert    *config.Certificate
-		results []deploy.Result
-	}
-	steps := []step{
-		{reloadCert("changed", "reload nginx"), []deploy.Result{{Target: "d", Changed: []string{"fullchain"}}}},
-		{reloadCert("unchanged", "reload nginx"), []deploy.Result{{Target: "d"}}},
-	}
-	for _, s := range steps {
-		if anyChanged(s.results) {
-			q.add(s.cert)
-		}
-	}
-	if got, want := strings.Join(q.certs["reload nginx"], ","), "changed"; got != want {
-		t.Errorf("contributors: got %q, want %q (unchanged cert must not enqueue)", got, want)
-	}
-}

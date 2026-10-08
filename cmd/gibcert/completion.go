@@ -138,7 +138,7 @@ _gibcert() {
 			_arguments \
 				'--max-jitter[sleep up to duration before each renewal]:duration' \
 				'--no-jitter[disable renewal jitter]' \
-				'--verbose[print renewal activity]'
+				'--verbose[print renewal and deployment activity]'
 			;;
 		account)
 			_arguments '1: :_gibcert_account_subcmds' '*:: :->accountargs'
@@ -287,7 +287,7 @@ _gibcert_commands() {
         'plan:show what apply would change'
         'apply:reconcile state with config'
         'issue:issue one certificate'
-        'renew:renew due certificates and deploy changed material'
+        'renew:renew due certificates and reconcile deployments'
         'account:manage ACME accounts'
         'ca:list, show, or export CA profiles'
         'dns-persist:manage dns-persist-01 standing records'
@@ -384,7 +384,7 @@ complete -c gibcert -n __gibcert_no_subcommand -a check -d 'parse and validate t
 complete -c gibcert -n __gibcert_no_subcommand -a plan -d 'show what apply would change'
 complete -c gibcert -n __gibcert_no_subcommand -a apply -d 'reconcile state with config'
 complete -c gibcert -n __gibcert_no_subcommand -a issue -d 'issue one certificate'
-complete -c gibcert -n __gibcert_no_subcommand -a renew -d 'renew due certificates and deploy changed material'
+complete -c gibcert -n __gibcert_no_subcommand -a renew -d 'renew due certificates and reconcile deployments'
 complete -c gibcert -n __gibcert_no_subcommand -a account -d 'manage ACME accounts'
 complete -c gibcert -n __gibcert_no_subcommand -a ca -d 'list, show, or export CA profiles'
 complete -c gibcert -n __gibcert_no_subcommand -a dns-persist -d 'manage dns-persist-01 standing records'
@@ -408,7 +408,7 @@ complete -c gibcert -n '__fish_seen_subcommand_from issue' -a '(__gibcert_certs)
 # renew flags
 complete -c gibcert -n '__fish_seen_subcommand_from renew' -l max-jitter -d 'sleep up to duration before each renewal' -r
 complete -c gibcert -n '__fish_seen_subcommand_from renew' -l no-jitter -d 'disable renewal jitter'
-complete -c gibcert -n '__fish_seen_subcommand_from renew' -l verbose -d 'print renewal activity'
+complete -c gibcert -n '__fish_seen_subcommand_from renew' -l verbose -d 'print renewal and deployment activity'
 
 # account subcommands and account name arg
 complete -c gibcert -n '__fish_seen_subcommand_from account; and not __fish_seen_subcommand_from rotate-key' -a rotate-key -d 'rotate an ACME account key'
