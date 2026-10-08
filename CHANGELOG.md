@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retaining base-domain and alias lookups.
 - Reissue certificates when their actual SAN set or known configured issuer
   changes, while preserving valid configured failover and imported certificates.
+- Preserve destination UID/GID when replacing deployed files, including the
+  unspecified attribute of an owner-only or group-only override.
 
 ## [0.2.1] - 2026-10-02
 

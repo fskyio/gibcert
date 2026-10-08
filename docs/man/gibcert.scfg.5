@@ -452,6 +452,11 @@ New public files default to 0644; new private keys default to 0600. Without an
 explicit mode, existing public-file modes are preserved and existing private-key
 modes are restricted to owner read/write bits, even when content is unchanged.
 Use an explicit mode such as 0640 for intentional group access.
+.PP
+On Unix-like systems, replacement files preserve existing owner and group for
+attributes omitted from the deploy block. An explicit owner or group changes
+only that attribute. First-time files keep process-created ownership unless
+overridden.
 .SH TLSA
 .TP
 .B tlsa { ... }

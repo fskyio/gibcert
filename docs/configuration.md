@@ -729,6 +729,8 @@ At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` mu
 
 By default, new certificate files are created with mode `0644` and new private key files are created with mode `0600`. Existing public-file modes are preserved when `mode` is omitted. Inherited private-key modes are restricted to owner read/write bits, including when content is already current. Set an explicit mode such as `0640` to allow intentional group access; other access and execute permission are rejected for targets containing `key` or `key-der`.
 
+On Unix-like systems, replacement files preserve the destination's existing owner and group for any attribute omitted from the deploy block. Explicit `owner` or `group` changes only that attribute. First-time files retain process-created ownership unless overridden.
+
 Deploy writes files atomically and only reports a file as changed when content differs. Ownership and mode are still reconciled when content is already current.
 
 ## `tlsa`

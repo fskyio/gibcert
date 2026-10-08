@@ -272,7 +272,7 @@ func installFile(dst string, data []byte, defaultMode fs.FileMode, d *config.Dep
 	if statErr == nil {
 		existingData, err := os.ReadFile(dst)
 		if err == nil && bytes.Equal(hash(existingData), hash(data)) {
-			if err := applyAttrs(dst, existing, defaultMode, d, out); err != nil {
+			if err := applyAttrs(dst, existing, defaultMode, d); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -298,7 +298,7 @@ func installFile(dst string, data []byte, defaultMode fs.FileMode, d *config.Dep
 		tmp.Close()
 		return false, err
 	}
-	if err := chownTo(tmpName, d, statErr == nil, existing, out); err != nil {
+	if err := chownTo(tmpName, d, statErr == nil, existing); err != nil {
 		tmp.Close()
 		return false, err
 	}
@@ -322,7 +322,7 @@ func fileContentChanged(dst string, data []byte) (bool, error) {
 	return !bytes.Equal(hash(existingData), hash(data)), nil
 }
 
-func applyAttrs(path string, existing os.FileInfo, defaultMode fs.FileMode, d *config.Deploy, out io.Writer) error {
+func applyAttrs(path string, existing os.FileInfo, defaultMode fs.FileMode, d *config.Deploy) error {
 	desiredMode, err := DesiredMode(defaultMode, existing, d)
 	if err != nil {
 		return err
@@ -332,29 +332,39 @@ func applyAttrs(path string, existing os.FileInfo, defaultMode fs.FileMode, d *c
 			return err
 		}
 	}
-	return chownTo(path, d, true, existing, out)
-}
-
-func chownTo(path string, d *config.Deploy, dstExists bool, existing os.FileInfo, out io.Writer) error {
 	if d.Owner == "" && d.Group == "" {
 		return nil
 	}
+	return chownTo(path, d, true, existing)
+}
+
+func chownTo(path string, d *config.Deploy, dstExists bool, existing os.FileInfo) error {
 	uid, gid := -1, -1
+	if dstExists {
+		uid, gid = fileOwnership(existing)
+	}
+	if d.Owner == "" && d.Group == "" && uid == -1 && gid == -1 {
+		return nil
+	}
 	if d.Owner != "" {
 		u, err := user.Lookup(d.Owner)
 		if err != nil {
 			return fmt.Errorf("owner %q: %w", d.Owner, err)
 		}
-		n, _ := strconv.Atoi(u.Uid)
-		uid = n
+		uid, err = strconv.Atoi(u.Uid)
+		if err != nil {
+			return fmt.Errorf("owner %q uid %q: %w", d.Owner, u.Uid, err)
+		}
 	}
 	if d.Group != "" {
 		g, err := user.LookupGroup(d.Group)
 		if err != nil {
 			return fmt.Errorf("group %q: %w", d.Group, err)
 		}
-		n, _ := strconv.Atoi(g.Gid)
-		gid = n
+		gid, err = strconv.Atoi(g.Gid)
+		if err != nil {
+			return fmt.Errorf("group %q gid %q: %w", d.Group, g.Gid, err)
+		}
 	}
 	if err := os.Chown(path, uid, gid); err != nil {
 		if os.Geteuid() != 0 {
