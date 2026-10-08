@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-
+- Release Windows and Plan 9 lock ownership on process termination, allowing
+  later commands to acquire the lock safely.
 - Reject colliding deploy destinations and restrict inherited private-key modes
   to owner access; intentional group access requires an explicit safe mode.
 - Validate complete ACME certificate responses against the requested key, names,
