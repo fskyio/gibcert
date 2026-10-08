@@ -78,4 +78,4 @@ The example service uses systemd directory helpers:
 - `RuntimeDirectory=gibcert`
 - `ConfigurationDirectory=gibcert`
 
-It also applies a restrictive umask and several hardening options. Adjust the service if your deploy hooks need extra permissions, access to paths blocked by hardening, or a different binary location.
+It also applies several hardening options. Adjust the service if your deploy hooks need extra permissions, access to paths blocked by hardening, or a different binary location.

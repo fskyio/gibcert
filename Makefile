@@ -7,6 +7,8 @@ DESTDIR ?=
 BASH_COMPLETION_DIR ?= $(PREFIX)/share/bash-completion/completions
 ZSH_COMPLETION_DIR  ?= $(PREFIX)/share/zsh/site-functions
 FISH_COMPLETION_DIR ?= $(PREFIX)/share/fish/vendor_completions.d
+MAN1_DIR ?= $(PREFIX)/share/man/man1
+MAN5_DIR ?= $(PREFIX)/share/man/man5
 
 GO ?= go
 GOFLAGS ?=
@@ -42,8 +44,8 @@ help:
 		'  make build          Build ./gibcert' \
 		'  make version        Print CLI version metadata' \
 		'  make run            Run the CLI (override ARGS=...)' \
-		'  make install        Install binary and shell completions' \
-		'  make uninstall      Remove installed binary and completions' \
+		'  make install        Install binary, shell completions, and manpages' \
+		'  make uninstall      Remove installed binary, shell completions, and manpages' \
 		'  make completions    Regenerate contrib/completions/ from the binary' \
 		'  make test           Run unit tests' \
 		'  make test-race      Run tests with the race detector' \
@@ -83,12 +85,17 @@ install: build completions
 	install -m 0644 contrib/completions/_$(APP) $(DESTDIR)$(ZSH_COMPLETION_DIR)/_$(APP)
 	install -d $(DESTDIR)$(FISH_COMPLETION_DIR)
 	install -m 0644 contrib/completions/$(APP).fish $(DESTDIR)$(FISH_COMPLETION_DIR)/$(APP).fish
+	install -d $(DESTDIR)$(MAN1_DIR) $(DESTDIR)$(MAN5_DIR)
+	install -m 0644 docs/man/$(APP).1 $(DESTDIR)$(MAN1_DIR)/$(APP).1
+	install -m 0644 docs/man/$(APP).scfg.5 $(DESTDIR)$(MAN5_DIR)/$(APP).scfg.5
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(APP)
 	rm -f $(DESTDIR)$(BASH_COMPLETION_DIR)/$(APP)
 	rm -f $(DESTDIR)$(ZSH_COMPLETION_DIR)/_$(APP)
 	rm -f $(DESTDIR)$(FISH_COMPLETION_DIR)/$(APP).fish
+	rm -f $(DESTDIR)$(MAN1_DIR)/$(APP).1
+	rm -f $(DESTDIR)$(MAN5_DIR)/$(APP).scfg.5
 
 completions: build
 	./$(APP) completion bash > contrib/completions/$(APP).bash

@@ -54,6 +54,10 @@ archives:
       - contrib/systemd/gibcert.service
       - contrib/systemd/gibcert.timer
       - contrib/completions/*
+      - src: docs/man/gibcert.1
+        dst: share/man/man1/gibcert.1
+      - src: docs/man/gibcert.scfg.5
+        dst: share/man/man5/gibcert.scfg.5
 
 nfpms:
   - id: gibcert-deb
@@ -102,6 +106,10 @@ nfpms:
         dst: /usr/share/zsh/vendor-completions/_gibcert
       - src: contrib/completions/gibcert.fish
         dst: /usr/share/fish/vendor_completions.d/gibcert.fish
+      - src: docs/man/gibcert.1
+        dst: /usr/share/man/man1/gibcert.1
+      - src: docs/man/gibcert.scfg.5
+        dst: /usr/share/man/man5/gibcert.scfg.5
       - dst: /etc/gibcert/conf.d
         type: dir
       - dst: /var/lib/gibcert

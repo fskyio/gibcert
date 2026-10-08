@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and require a recovery hook for before actions that can stop services.
 - Reconcile pending and drifted deployments during scheduled renewal even when
   certificates remain current, without reissuance or renewal jitter.
+- Install both manual pages with `make install` and include them in release
+  archives and Debian packages.
+- Correct the systemd hardening guidance to document the shipped unit's umask
+  behavior and actual sandboxing protections.
 
 ## [0.2.1] - 2026-10-02
 
