@@ -229,6 +229,8 @@ Issue one certificate regardless of the renewal plan:
 gibcert issue example.com
 ```
 
+Before replacing stored ACME material, gibcert validates every certificate in the selected chain, checks the leaf against the requested key and DNS/IP/wildcard names, and requires currently valid certificates suitable for TLS server use. An invalid CA response leaves the existing certificate, private key, metadata, key archives, and staged TLSA key unchanged. This validation does not require a system-trusted root, so private ACME servers remain supported.
+
 Force a new certificate key:
 
 ```sh

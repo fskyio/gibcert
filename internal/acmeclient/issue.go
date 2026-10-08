@@ -348,6 +348,10 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	if err != nil {
 		return fmt.Errorf("preferred-chain %q: %w", cert.PreferredChain, err)
 	}
+	leaf, err := validateIssuedChain(chain, certKey, cert.Names, time.Now())
+	if err != nil {
+		return fmt.Errorf("validate issued certificate chain: %w", err)
+	}
 
 	paths := store.CertPaths(cert.Name)
 	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
@@ -404,10 +408,6 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 			return fmt.Errorf("prune previous privkey archives: %w", err)
 		}
 	}
-	leaf, err := x509.ParseCertificate(chain[0])
-	if err != nil {
-		return fmt.Errorf("parse issued certificate: %w", err)
-	}
 	meta := storage.CertMeta{
 		Name:         cert.Name,
 		Account:      accountName,
@@ -439,6 +439,73 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 
 	fmt.Fprintf(out, "stored:\n  %s\n  %s\n  %s\n  %s\n", paths.Cert, paths.Chain, paths.Fullchain, paths.Key)
 	return nil
+}
+
+// validateIssuedChain checks the returned material before any canonical state
+// changes. The supplied chain need not terminate at a system-trusted root:
+// private ACME servers and chains omitting their root are supported.
+func validateIssuedChain(chain [][]byte, key crypto.Signer, names []string, now time.Time) (*x509.Certificate, error) {
+	if len(chain) == 0 {
+		return nil, errors.New("chain contained no certificates")
+	}
+	parsed := make([]*x509.Certificate, len(chain))
+	for i, der := range chain {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("parse certificate %d: %w", i+1, err)
+		}
+		if now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
+			return nil, fmt.Errorf("certificate %d is not currently valid", i+1)
+		}
+		if len(cert.UnhandledCriticalExtensions) != 0 {
+			return nil, fmt.Errorf("certificate %d has unhandled critical extensions", i+1)
+		}
+		parsed[i] = cert
+	}
+	leaf := parsed[0]
+	publicKey, ok := leaf.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
+	if !ok || !publicKey.Equal(key.Public()) {
+		return nil, errors.New("leaf public key does not match CSR/private key")
+	}
+	if leaf.IsCA {
+		return nil, errors.New("leaf is a CA certificate")
+	}
+	if leaf.KeyUsage != 0 && leaf.KeyUsage&(x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment|x509.KeyUsageKeyAgreement) == 0 {
+		return nil, errors.New("leaf key usage does not permit TLS")
+	}
+	if len(leaf.ExtKeyUsage) != 0 || len(leaf.UnknownExtKeyUsage) != 0 {
+		serverAuth := false
+		for _, usage := range leaf.ExtKeyUsage {
+			if usage == x509.ExtKeyUsageServerAuth || usage == x509.ExtKeyUsageAny {
+				serverAuth = true
+			}
+		}
+		if !serverAuth {
+			return nil, errors.New("leaf extended key usage does not permit TLS server authentication")
+		}
+	}
+	for _, name := range names {
+		if strings.HasPrefix(name, "*.") {
+			found := false
+			for _, san := range leaf.DNSNames {
+				if strings.EqualFold(san, name) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("leaf does not cover requested wildcard %q", name)
+			}
+		} else if err := leaf.VerifyHostname(name); err != nil {
+			return nil, fmt.Errorf("leaf does not cover requested name %q: %w", name, err)
+		}
+	}
+	for i := range len(parsed) - 1 {
+		if err := parsed[i].CheckSignatureFrom(parsed[i+1]); err != nil {
+			return nil, fmt.Errorf("certificate %d is not signed by certificate %d: %w", i+1, i+2, err)
+		}
+	}
+	return leaf, nil
 }
 
 // selectChain picks the chain to store from the alternates the ACME client downloaded.
