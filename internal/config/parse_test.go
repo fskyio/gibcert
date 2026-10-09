@@ -145,6 +145,67 @@ certificate example.com {
 	}
 }
 
+func TestParseTLSANames(t *testing.T) {
+	src := `
+account letsencrypt {
+  ca letsencrypt
+  email admin@example.com
+}
+
+provider dynamic-dns {
+  type dns
+  driver rfc2136
+  server 192.0.2.53
+  zone example.com
+  secret tsig-key {
+    file /etc/gibcert/rfc2136.key
+  }
+}
+
+certificate example.com {
+  account letsencrypt
+  names example.com www.example.com
+  challenge dns-01 {
+    provider dynamic-dns
+  }
+  tlsa {
+    provider dynamic-dns
+    port 25
+    names mail.example.com smtp.example.com
+    ttl 3600
+  }
+}
+`
+	cfg, err := Read(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c := cfg.Certificates[0]
+	if c.TLSA == nil {
+		t.Fatal("tlsa: got nil")
+	}
+	if got, want := c.TLSA.Names, []string{"mail.example.com", "smtp.example.com"}; !equalSlices(got, want) {
+		t.Errorf("tlsa names: got %v, want %v", got, want)
+	}
+
+	bad := strings.Replace(src, "names mail.example.com smtp.example.com", "names", 1)
+	if _, err := Read(strings.NewReader(bad)); err == nil {
+		t.Error("Read accepted tlsa names without values")
+	}
+
+	ip := strings.Replace(src, "names mail.example.com smtp.example.com", "names 192.0.2.1", 1)
+	cfg, err = Read(strings.NewReader(ip))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted an IP address as a tlsa name")
+	}
+}
+
 func TestLoadIncludesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	confDir := filepath.Join(dir, "conf.d")

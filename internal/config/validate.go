@@ -383,6 +383,11 @@ func validateTLSA(cert *Certificate, providers map[string]*Provider) error {
 	if len(t.Ports) == 0 {
 		return fmt.Errorf("tlsa: at least one port is required")
 	}
+	for _, name := range t.Names {
+		if IsIPName(name) {
+			return fmt.Errorf("tlsa: name %q: IP addresses are not valid TLSA owner names", name)
+		}
+	}
 	if t.Usage == 0 && t.Selector == 0 && t.MatchingType == 0 {
 		t.Usage = 3
 		t.Selector = 1

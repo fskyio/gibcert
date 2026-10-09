@@ -170,7 +170,8 @@ func pickTLSAKey(cert *config.Certificate, store *storage.Store, now time.Time) 
 	return TLSAKeyDecision{Key: fresh, Bootstrap: true}, nil
 }
 
-// reconcileTLSA publishes the current and next-key TLSA records, removes any
+// reconcileTLSA publishes the current and next-key TLSA records under the
+// configured names (defaulting to the certificate names), removes any
 // previously published records that no longer match, generates a new staged
 // next key if needed, and returns the updated TLSA metadata. The caller saves
 // it as part of the cert metadata.
@@ -215,7 +216,11 @@ func reconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 		return nil, err
 	}
 
-	desired := composeDesiredTLSA(cert.Names, spec.Ports, []string{currentValue, nextValue})
+	names := spec.Names
+	if len(names) == 0 {
+		names = cert.Names
+	}
+	desired := composeDesiredTLSA(names, spec.Ports, []string{currentValue, nextValue})
 
 	for _, rec := range desired {
 		fmt.Fprintf(out, "tlsa publish: %s IN TLSA %s\n", rec.Owner, rec.RData)

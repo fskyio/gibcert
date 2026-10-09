@@ -2470,6 +2470,9 @@ func printTLSAStatus(cert *config.Certificate, store *storage.Store) {
 		ports[i] = fmt.Sprintf("%d/%s", p.Port, p.Protocol)
 	}
 	fmt.Printf("  ports:     %s\n", strings.Join(ports, " "))
+	if len(cert.TLSA.Names) > 0 {
+		fmt.Printf("  names:     %s\n", strings.Join(cert.TLSA.Names, " "))
+	}
 	meta, err := store.LoadCertMeta(cert.Name)
 	if err != nil || meta == nil || meta.TLSA == nil {
 		fmt.Printf("  state:     not bootstrapped\n")

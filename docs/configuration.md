@@ -737,7 +737,7 @@ Only content differences are reported as changes. Ownership and mode are still r
 
 ## `tlsa`
 
-Manage DANE TLSA records for the certificate. gibcert publishes one TLSA record per `(port, name)` pair using DANE-EE pinning of the certificate public key, and rotates the key safely across renewals by always keeping a next-renewal key pre-published.
+Manage DANE TLSA records for the certificate. gibcert publishes one TLSA record per `(port, name)` pair using DANE-EE pinning of the certificate public key, and rotates the key safely across renewals by always keeping a next-renewal key pre-published. Records are published under the certificate's names by default; the `names` directive selects the (sub)domains explicitly.
 
 ```scfg
 certificate example.com {
@@ -752,6 +752,7 @@ certificate example.com {
     provider powerdns
     port 443
     port 853/tcp
+    names example.com
     ttl 3600
   }
 
@@ -769,6 +770,7 @@ Directives:
 | --- | --- |
 | `provider NAME` | DNS provider used to publish and remove TLSA records. Required. Must use a driver that supports persistent record edits: `exec`, `nsupdate`, `rfc2136`, `powerdns`, or `pdns`. |
 | `port PORT[/PROTO]` | Repeatable. Port and transport for which TLSA records are published. Protocol defaults to `tcp`; `tcp`, `udp`, and `sctp` are accepted. |
+| `names NAME...` | Base (sub)domains under which TLSA records are published, replacing the default of the certificate's names. Wildcard prefixes are stripped; IP addresses are rejected. When the set changes, records previously published under other names are removed automatically. |
 | `ttl SECONDS` | TLSA record TTL. Default is `3600`. Must be less than the certificate renewal window so the next-renewal key has time to propagate. |
 | `type USAGE SELECTOR MTYPE` | Certificate usage, selector, and matching type. Default is `3 1 1` (DANE-EE, SPKI, SHA-256). Only DANE-EE with SPKI selector is supported. Matching type 1 (SHA-256) or 2 (SHA-512) is accepted. |
 
@@ -779,7 +781,7 @@ For a certificate with `tlsa { ... }`, gibcert maintains two private keys at all
 - `privkey.pem`: the key in the currently issued certificate.
 - `privkey-next.pem`: a pre-staged key whose TLSA fingerprint is already published in DNS.
 
-On every issuance, gibcert ensures both keys' TLSA records are published at every configured `(port, name)`. When a renewal is due and the staged next-key's TLSA has been published longer than `ttl`, gibcert issues the new certificate against the staged key, promotes it to `privkey.pem`, generates a new staged next-key, and publishes its TLSA. The retired key's TLSA is removed.
+On every issuance, gibcert ensures both keys' TLSA records are published at every configured `(port, name)` pair — the certificate's names unless `names` is set. When a renewal is due and the staged next-key's TLSA has been published longer than `ttl`, gibcert issues the new certificate against the staged key, promotes it to `privkey.pem`, generates a new staged next-key, and publishes its TLSA. The retired key's TLSA is removed.
 
 On the very first issuance for a TLSA-managed certificate, both records are published before the certificate is written to canonical storage, so DANE clients see the pin once the certificate is deployed.
 

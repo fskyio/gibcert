@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `names` directive in the `tlsa` block to publish TLSA records under explicit
+  (sub)domains instead of the certificate's names. Records previously published
+  under other names are removed automatically.
+
 ### Fixed
 - Release Windows and Plan 9 lock ownership on process termination, allowing
   later commands to acquire the lock safely.

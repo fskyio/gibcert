@@ -160,6 +160,7 @@ type Issuer struct {
 type TLSASpec struct {
 	Provider     string
 	Ports        []TLSAPort
+	Names        []string // base (sub)domains for TLSA owners; empty = certificate names
 	TTL          int
 	Usage        int
 	Selector     int

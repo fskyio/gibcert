@@ -481,6 +481,12 @@ or powerdns.
 Repeatable. Port and transport for which TLSA records are published.
 Protocol defaults to tcp; tcp, udp, and sctp are accepted.
 .TP
+.B names \fINAME\fR...
+Base (sub)domains under which TLSA records are published, replacing the
+default of the certificate's names. Wildcard prefixes are stripped and IP
+addresses are rejected. Records previously published under other names are
+removed.
+.TP
 .B ttl \fISECONDS\fR
 TLSA record TTL. Default is 3600. Must be less than the certificate renewal
 window.
