@@ -8,7 +8,7 @@ _gibcert() {
         cword=$COMP_CWORD
     }
 
-    local commands="help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion"
+    local commands="help version check plan apply issue renew account ca dns-persist tlsa deploy host revoke delete rename list show import completion"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -16,8 +16,26 @@ _gibcert() {
     fi
 
     case ${words[1]} in
-    issue|deploy|revoke|delete|show)
+    show)
         COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        ;;
+    issue|revoke|delete)
+        COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        ;;
+    deploy)
+        if [[ $prev == --host ]]; then
+            COMPREPLY=($(compgen -W "$(gibcert __complete hosts 2>/dev/null)" -- "$cur"))
+        elif [[ $cur == -* ]]; then
+            COMPREPLY=($(compgen -W "--host" -- "$cur"))
+        else
+            COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        fi
+        ;;
+    host)
+        case $cword in
+        2) COMPREPLY=($(compgen -W "test" -- "$cur")) ;;
+        *) COMPREPLY=($(compgen -W "$(gibcert __complete hosts 2>/dev/null)" -- "$cur")) ;;
+        esac
         ;;
     rename)
         case $cword in

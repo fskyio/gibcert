@@ -133,3 +133,26 @@ func TestCheckWebrootRejectsFile(t *testing.T) {
 		t.Fatalf("checkWebroot got %v, want file error", err)
 	}
 }
+
+func TestCheckOwnershipRequiresRootOnlyForLocalDeploys(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may set any owner")
+	}
+	cfg := func(hosts ...string) *config.Config {
+		return &config.Config{
+			CAs: []*config.CA{{Name: "dev", Type: "local"}},
+			Certificates: []*config.Certificate{{
+				Name:    "example.com",
+				CA:      "dev",
+				Names:   []string{"example.com"},
+				Deploys: []*config.Deploy{{Name: "d", Cert: "/tmp/cert.pem", Owner: "root", Group: "ssl-cert", Hosts: hosts}},
+			}},
+		}
+	}
+	if err := Check(cfg()); err == nil || !strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("local deploy: Check = %v, want requires root", err)
+	}
+	if err := Check(cfg("web1")); err != nil {
+		t.Fatalf("remote deploy: Check = %v, want ownership left to the remote host", err)
+	}
+}

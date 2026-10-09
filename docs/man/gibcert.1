@@ -119,8 +119,30 @@ automatically when published owners differ from the configured names and
 ports; use it to apply other tlsa changes, such as ttl or type, before the next
 renewal.
 .TP
-.B deploy \fICERTIFICATE\fR
-Deploy stored canonical material for one configured certificate.
+.B deploy [\fB\-\-host\fR \fINAME\fR] \fICERTIFICATE\fR
+Deploy stored canonical material for one configured certificate to its local
+and remote deploy targets. \fB\-\-host\fR restricts the deploy to targets
+installed on that host; it is an error if the host is unknown or the
+certificate has no target on it. Remote results are printed as target@host.
+A failure on one host does not stop the others; all failures are reported and
+the exit status is non-zero.
+.TP
+.B host test [\fINAME\fR...]
+Check remote deploy hosts (all configured hosts when no name is given; an
+unknown name is a usage error). Connects to each host over ssh, reports the
+login user, address, remote gibcert version and uid, then does a dry-run
+installation of every deploy target on that host using the stored material
+(placeholder material for a certificate that is not issued yet, which checks
+permissions only). Permission failures print an example setup for an
+unprivileged deploy user. Never installs files or runs hooks. Exits 0 only if
+everything is ok, otherwise 1. See
+.IR docs/remote\-deploy.md .
+.TP
+.B receive
+Internal. Started over ssh on a remote host by remote deploy; not shown in
+help output. Takes no arguments, reads no configuration, reads one JSON
+request on standard input and writes one JSON response on standard output.
+Not intended to be run by hand.
 .TP
 .B revoke [\fB\-\-reason\fR \fIREASON\fR] [\fB\-\-reissue\fR] [\fB\-\-yes\fR] \fICERTIFICATE\fR
 Revoke a stored ACME certificate at the CA. \fB\-\-reissue\fR issues and

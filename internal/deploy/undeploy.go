@@ -27,6 +27,8 @@ type UndeployResult struct {
 	Path   string
 	Kind   string
 	Target string
+	// Host is the remote host the record belongs to; empty means this machine.
+	Host   string
 	Status string
 }
 
@@ -39,6 +41,15 @@ func Undeploy(certName string, store *storage.Store) ([]UndeployResult, error) {
 	var results []UndeployResult
 	seen := map[string]bool{}
 	for _, rec := range meta.Deploys {
+		if rec.Host != "" {
+			// Removing from another machine is not supported; never treat a
+			// remote path as a local one.
+			results = append(results, UndeployResult{
+				Path: rec.Path, Kind: rec.Kind, Target: rec.Target, Host: rec.Host,
+				Status: "skipped: installed on remote host " + rec.Host,
+			})
+			continue
+		}
 		if rec.Path == "" || seen[rec.Path] {
 			continue
 		}

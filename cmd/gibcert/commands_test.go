@@ -619,7 +619,7 @@ certificate example.com {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pl, err := plan.Compute(cfg, store, time.Now())
+			pl, err := plan.Compute(cfg, store, time.Now(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -655,7 +655,7 @@ certificate example.com {
 			if after.Issuer.CommonName != tc.ca+" CA" {
 				t.Fatalf("leaf issuer=%s, want %s CA", after.Issuer.CommonName, tc.ca)
 			}
-			pl, err = plan.Compute(cfg, store, time.Now())
+			pl, err = plan.Compute(cfg, store, time.Now(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -811,7 +811,7 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 			if err != nil || string(reloadLog) != wantReload {
 				t.Fatalf("coalesced reloads = %q, %v; want %q", reloadLog, err, wantReload)
 			}
-			pl, err := plan.Compute(cfg, store, time.Now())
+			pl, err := plan.Compute(cfg, store, time.Now(), nil)
 			if err != nil || !pl.Empty() {
 				t.Fatalf("pending deployment did not converge: %#v, %v", pl, err)
 			}

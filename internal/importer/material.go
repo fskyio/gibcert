@@ -190,6 +190,7 @@ func importCertMaterial(store *storage.Store, m CertMaterial, opts CertOptions) 
 	}
 	if existing != nil {
 		meta.Deploys = existing.Deploys
+		meta.DeployFailures = existing.DeployFailures
 		meta.TLSA = existing.TLSA
 	}
 	if err := store.SaveCertMeta(m.Name, meta); err != nil {

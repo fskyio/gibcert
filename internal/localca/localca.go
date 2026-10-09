@@ -179,6 +179,7 @@ func Issue(cert *config.Certificate, ca *config.CA, store *storage.Store, opts I
 	}
 	if existing, err := store.LoadCertMeta(cert.Name); err == nil {
 		meta.Deploys = existing.Deploys
+		meta.DeployFailures = existing.DeployFailures
 		meta.TLSA = existing.TLSA
 	}
 	if err := store.SaveCertMeta(cert.Name, meta); err != nil {

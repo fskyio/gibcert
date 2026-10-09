@@ -30,6 +30,7 @@ An ACME client is a pretty important tool for a sysadmin if you are doing things
 **Operations**
 - Atomic deployment of cert, chain, fullchain, and key files with strict mode enforcement
 - Deploy hooks for reloading services after changed material is installed
+- Native remote deployment over SSH: install certificates on other hosts with the same staging, rollback, and hooks (`docs/remote-deploy.md`)
 - Certificate dependencies: sequence issuance across certs that rely on each other
 - Renewal and deploy groups: share settings and template deploy paths across certs
 - Plan mode: inspect every pending account, certificate, deploy, and hook action before committing

@@ -41,6 +41,8 @@ import (
 	"gitfield.org/fsky/gibcert/internal/paths"
 	"gitfield.org/fsky/gibcert/internal/plan"
 	"gitfield.org/fsky/gibcert/internal/preflight"
+	"gitfield.org/fsky/gibcert/internal/receive"
+	"gitfield.org/fsky/gibcert/internal/remote"
 	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
@@ -59,7 +61,8 @@ commands:
   ca <command>          list, show, or export CA profiles
   dns-persist <command> manage dns-persist-01 standing records
   tlsa <command>        manage DANE TLSA records
-  deploy <certificate>  deploy stored certificate material to configured targets
+  deploy [flags] <cert> deploy stored certificate material to configured targets
+  host test [NAME...]   check SSH access and deploy permissions on remote hosts
   revoke [flags] <cert> revoke a stored certificate at the CA
   delete [flags] <cert> remove local certificate state, optionally undeploying
   rename <old> <new>    rename stored certificate state
@@ -117,6 +120,16 @@ func main() {
 }
 
 func run() int {
+	// "gibcert receive" is the remote end of a cross-machine deploy, run over
+	// ssh. It must come before flag parsing, path resolution, and logging so
+	// that nothing but the JSON response reaches stdout.
+	if len(os.Args) > 1 && os.Args[1] == "receive" {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "gibcert receive: takes no arguments")
+			return 2
+		}
+		return receive.Serve(os.Stdin, os.Stdout, os.Stderr)
+	}
 	var configPath, stateDir string
 	var logFormat string
 	var useSyslog bool
@@ -182,6 +195,8 @@ func run() int {
 		return cmdTLSA(p, args[1:])
 	case "deploy":
 		return cmdDeploy(p, args[1:])
+	case "host":
+		return cmdHost(p, args[1:])
 	case "revoke":
 		return cmdRevoke(p, args[1:])
 	case "delete":
@@ -237,7 +252,9 @@ func cmdHelp(args []string) int {
 	case "tlsa":
 		fmt.Println(tlsaReconcileUsage)
 	case "deploy":
-		fmt.Println("usage: gibcert deploy <certificate>")
+		fmt.Println("usage: gibcert deploy [--host NAME] <certificate>")
+	case "host":
+		fmt.Println("usage: gibcert host test [NAME...]")
 	case "revoke":
 		fmt.Println("usage: gibcert revoke [--reason REASON] [--reissue] [--yes] <certificate>")
 	case "delete":
@@ -1024,7 +1041,7 @@ func cmdPlan(p *paths.Paths, args []string) int {
 	}
 	defer lk.Release()
 
-	pl, err := plan.Compute(cfg, store, time.Now())
+	pl, err := plan.Compute(cfg, store, time.Now(), &remote.Client{})
 	if err != nil {
 		logError(err)
 		return 1
@@ -1079,7 +1096,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 	}
 	defer lk.Release()
 
-	pl, err := plan.Compute(cfg, store, time.Now())
+	pl, err := plan.Compute(cfg, store, time.Now(), &remote.Client{})
 	if err != nil {
 		logError(err)
 		return 1
@@ -1162,20 +1179,16 @@ func cmdApply(p *paths.Paths, args []string) int {
 				continue
 			}
 		}
-		results, err := deploy.Deploy(cert, store, os.Stdout)
+		results, err := deploy.Deploy(cert, store, os.Stdout, deployOptions(cfg)...)
+		printDeployResults(results, false)
+		if anyChanged(results) {
+			reloads.add(cert)
+		}
 		if err != nil {
-			logError(fmt.Errorf("%s: %w", cert.Name, err))
+			logError(fmt.Errorf("%s: %w", cert.Name, withRemoteHint(err)))
 			outcomes[cert.Name] = runFailed
 			failed = true
 			continue
-		}
-		for _, r := range results {
-			if len(r.Changed) > 0 {
-				fmt.Printf("  %s: updated %v\n", r.Target, r.Changed)
-			}
-		}
-		if anyChanged(results) {
-			reloads.add(cert)
 		}
 		outcomes[cert.Name] = runOK
 	}
@@ -1533,22 +1546,17 @@ func cmdRenew(p *paths.Paths, args []string) int {
 			}
 		}
 
-		results, err := deploy.Deploy(cert, store, out)
+		results, err := deploy.Deploy(cert, store, out, deployOptions(cfg)...)
+		printDeployResults(results, verbose)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: deploy: %w", cert.Name, err))
+			if anyChanged(results) {
+				reloads.add(cert)
+			}
+			errs = append(errs, fmt.Errorf("%s: deploy: %w", cert.Name, withRemoteHint(err)))
 			logError(errs[len(errs)-1])
 			outcomes[cert.Name] = runFailed
 			releaseLock(lk)
 			continue
-		}
-		if verbose {
-			for _, r := range results {
-				if len(r.Changed) == 0 {
-					fmt.Printf("  %s: up to date\n", r.Target)
-				} else {
-					fmt.Printf("  %s: updated %v\n", r.Target, r.Changed)
-				}
-			}
 		}
 		if anyChanged(results) {
 			reloads.add(cert)
@@ -1922,17 +1930,11 @@ func cmdRevoke(p *paths.Paths, args []string) int {
 			logError(err)
 			return 1
 		}
-		results, err := deploy.Deploy(cert, store, os.Stdout)
+		results, err := deploy.Deploy(cert, store, os.Stdout, deployOptions(cfg)...)
+		printDeployResults(results, true)
 		if err != nil {
-			logError(err)
+			logError(withRemoteHint(err))
 			return 1
-		}
-		for _, r := range results {
-			if len(r.Changed) == 0 {
-				fmt.Printf("  %s: up to date\n", r.Target)
-			} else {
-				fmt.Printf("  %s: updated %v\n", r.Target, r.Changed)
-			}
 		}
 	}
 	return 0
@@ -2026,6 +2028,10 @@ func cmdDelete(p *paths.Paths, args []string) int {
 			return 1
 		}
 		for _, r := range results {
+			if r.Host != "" {
+				fmt.Printf("  %s@%s/%s: %s: %s\n", r.Target, r.Host, r.Kind, r.Status, r.Path)
+				continue
+			}
 			fmt.Printf("  %s/%s: %s: %s\n", r.Target, r.Kind, r.Status, r.Path)
 		}
 	}
@@ -2327,24 +2333,25 @@ func cmdShow(p *paths.Paths, args []string) int {
 		fmt.Println("  none")
 	}
 	for _, d := range cert.Deploys {
-		fmt.Printf("  %s:\n", d.Name)
-		if d.Cert != "" {
-			printDeployPathStatus("cert", d.Cert, deployDetails[deployStatusKey(d.Name, "cert", d.Cert)])
-		}
-		if d.Chain != "" {
-			printDeployPathStatus("chain", d.Chain, deployDetails[deployStatusKey(d.Name, "chain", d.Chain)])
-		}
-		if d.Fullchain != "" {
-			printDeployPathStatus("fullchain", d.Fullchain, deployDetails[deployStatusKey(d.Name, "fullchain", d.Fullchain)])
-		}
-		if d.Key != "" {
-			printDeployPathStatus("key", d.Key, deployDetails[deployStatusKey(d.Name, "key", d.Key)])
-		}
-		if d.Before != "" {
-			fmt.Printf("    before:    %s\n", d.Before)
-		}
-		if d.After != "" {
-			fmt.Printf("    after:     %s\n", d.After)
+		for _, host := range deploy.Hosts(d) {
+			if host == "" {
+				fmt.Printf("  %s:\n", d.Name)
+			} else {
+				fmt.Printf("  %s@%s:\n", d.Name, host)
+			}
+			for _, it := range []struct{ kind, path string }{
+				{"cert", d.Cert}, {"chain", d.Chain}, {"fullchain", d.Fullchain}, {"key", d.Key},
+			} {
+				if it.path != "" {
+					printDeployPathStatus(it.kind, it.path, deployDetails[deployStatusKey(d.Name, host, it.kind, it.path)])
+				}
+			}
+			if d.Before != "" {
+				fmt.Printf("    before:    %s\n", d.Before)
+			}
+			if d.After != "" {
+				fmt.Printf("    after:     %s\n", d.After)
+			}
 		}
 	}
 	return 0
@@ -2452,6 +2459,8 @@ func formatRenewAt(d renew.Decision, before time.Duration) string {
 
 type deployPathStatus struct {
 	Target string
+	// Host is the remote host the target installs on; empty means this machine.
+	Host   string
 	Kind   string
 	Path   string
 	Status string
@@ -2479,61 +2488,112 @@ func deployStatuses(cert *config.Certificate, store *storage.Store) []deployPath
 			{"fullchain", d.Fullchain},
 			{"key", d.Key},
 		}
-		for _, it := range items {
-			if it.path == "" {
-				continue
-			}
-			st := deployPathStatus{
-				Target: d.Name,
-				Kind:   it.kind,
-				Path:   it.path,
-				Status: "unknown",
-			}
-			if rec := findDeployRecord(meta, d.Name, it.kind, it.path); rec != nil {
-				st.At = rec.At
-			}
-			src, err := os.ReadFile(sources[it.kind])
-			if err != nil {
-				st.Status = "no-source"
-				st.Detail = err.Error()
-				statuses = append(statuses, st)
-				continue
-			}
-			dst, err := os.ReadFile(it.path)
-			if errors.Is(err, os.ErrNotExist) {
-				if st.At.IsZero() {
-					st.Status = "never"
+		for _, host := range deploy.Hosts(d) {
+			for _, it := range items {
+				if it.path == "" {
+					continue
+				}
+				st := deployPathStatus{
+					Target: d.Name,
+					Host:   host,
+					Kind:   it.kind,
+					Path:   it.path,
+					Status: "unknown",
+				}
+				rec := findDeployRecord(meta, d.Name, host, it.kind, it.path)
+				if rec != nil {
+					st.At = rec.At
+				}
+				if host != "" {
+					statuses = append(statuses, remoteDeployStatus(st, rec, findDeployFailure(meta, d.Name, host), sources[it.kind]))
+					continue
+				}
+				src, err := os.ReadFile(sources[it.kind])
+				if err != nil {
+					st.Status = "no-source"
+					st.Detail = err.Error()
+					statuses = append(statuses, st)
+					continue
+				}
+				dst, err := os.ReadFile(it.path)
+				if errors.Is(err, os.ErrNotExist) {
+					if st.At.IsZero() {
+						st.Status = "never"
+					} else {
+						st.Status = "missing"
+					}
+					statuses = append(statuses, st)
+					continue
+				}
+				if err != nil {
+					st.Status = "error"
+					st.Detail = err.Error()
+					statuses = append(statuses, st)
+					continue
+				}
+				if storage.SHA256Hex(dst) == storage.SHA256Hex(src) {
+					st.Status = "ok"
 				} else {
-					st.Status = "missing"
+					st.Status = "stale"
 				}
 				statuses = append(statuses, st)
-				continue
 			}
-			if err != nil {
-				st.Status = "error"
-				st.Detail = err.Error()
-				statuses = append(statuses, st)
-				continue
-			}
-			if storage.SHA256Hex(dst) == storage.SHA256Hex(src) {
-				st.Status = "ok"
-			} else {
-				st.Status = "stale"
-			}
-			statuses = append(statuses, st)
 		}
 	}
 	return statuses
 }
 
-func findDeployRecord(meta *storage.CertMeta, target, kind, path string) *storage.CertDeployMeta {
+// remoteDeployStatus fills in the status of one kind installed on a remote
+// host. The remote filesystem is never inspected; the state comes from what
+// gibcert recorded when it last installed the material.
+func remoteDeployStatus(st deployPathStatus, rec *storage.CertDeployMeta, failure *storage.CertDeployFailure, sourcePath string) deployPathStatus {
+	if failure != nil {
+		st.Status = "failed"
+		st.Detail = fmt.Sprintf("since %s: %s", formatInstant(failure.Since), failure.Error)
+		return st
+	}
+	src, err := os.ReadFile(sourcePath)
+	if err != nil {
+		st.Status = "no-source"
+		st.Detail = err.Error()
+		return st
+	}
+	if rec == nil {
+		st.Status = "never"
+		return st
+	}
+	if rec.SHA256 == storage.SHA256Hex(src) {
+		st.Status = "ok"
+	} else {
+		st.Status = "stale"
+	}
+	if len(rec.SHA256) >= 12 {
+		st.Detail = "sha256 " + rec.SHA256[:12]
+	}
+	return st
+}
+
+func findDeployRecord(meta *storage.CertMeta, target, host, kind, path string) *storage.CertDeployMeta {
 	if meta == nil {
 		return nil
 	}
 	for i := range meta.Deploys {
 		rec := &meta.Deploys[i]
-		if rec.Target == target && rec.Kind == kind && rec.Path == path {
+		if rec.Target == target && rec.Host == host && rec.Kind == kind && rec.Path == path {
 			return rec
+		}
+	}
+	return nil
+}
+
+func findDeployFailure(meta *storage.CertMeta, target, host string) *storage.CertDeployFailure {
+	if meta == nil {
+		return nil
+	}
+	for i := range meta.DeployFailures {
+		f := &meta.DeployFailures[i]
+		if f.Target == target && f.Host == host {
+			return f
 		}
 	}
 	return nil
@@ -2555,6 +2615,8 @@ func deploySummary(cert *config.Certificate, store *storage.Store) string {
 	switch {
 	case counts["error"] > 0:
 		return "error"
+	case counts["failed"] > 0:
+		return "failed"
 	case counts["ok"] == total:
 		return "ok"
 	case counts["no-source"] == total:
@@ -2573,18 +2635,23 @@ func deploySummary(cert *config.Certificate, store *storage.Store) string {
 func deployStatusByKey(statuses []deployPathStatus) map[string]deployPathStatus {
 	out := make(map[string]deployPathStatus, len(statuses))
 	for _, st := range statuses {
-		out[deployStatusKey(st.Target, st.Kind, st.Path)] = st
+		out[deployStatusKey(st.Target, st.Host, st.Kind, st.Path)] = st
 	}
 	return out
 }
 
-func deployStatusKey(target, kind, path string) string {
-	return target + "\x00" + kind + "\x00" + path
+func deployStatusKey(target, host, kind, path string) string {
+	return target + "\x00" + host + "\x00" + kind + "\x00" + path
 }
 
 func printDeployPathStatus(kind, path string, st deployPathStatus) {
 	suffix := ""
-	if st.Status != "" {
+	switch {
+	case st.Status == "failed":
+		suffix = " [FAILED " + st.Detail + "]"
+	case st.Host != "" && st.Status == "never":
+		suffix = " [not deployed yet]"
+	case st.Status != "":
 		suffix = " [" + st.Status
 		if !st.At.IsZero() {
 			suffix += ", last " + formatInstant(st.At)
@@ -2640,11 +2707,24 @@ func renewWindow(cert *config.Certificate, d renew.Decision) time.Duration {
 }
 
 func cmdDeploy(p *paths.Paths, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gibcert deploy <certificate>")
+	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: gibcert deploy [--host NAME] <certificate>")
+	}
+	hostName := ""
+	fs.StringVar(&hostName, "host", "", "only deploy to targets installed on this host")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
-	if err := validateCertificateArg(args[0]); err != nil {
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return 2
+	}
+	if err := validateCertificateArg(fs.Arg(0)); err != nil {
 		logError(err)
 		return 2
 	}
@@ -2653,10 +2733,22 @@ func cmdDeploy(p *paths.Paths, args []string) int {
 		logError(err)
 		return 1
 	}
-	cert, err := findCert(cfg, args[0])
+	cert, err := findCert(cfg, fs.Arg(0))
 	if err != nil {
 		logError(err)
 		return 1
+	}
+	opts := deployOptions(cfg)
+	if hostName != "" {
+		if cfg.FindHost(hostName) == nil {
+			logError(fmt.Errorf("unknown host %q", hostName))
+			return 1
+		}
+		if !certInstallsOnHost(cert, hostName) {
+			logError(fmt.Errorf("%s: no deploy target installs on host %q", cert.Name, hostName))
+			return 1
+		}
+		opts = append(opts, deploy.OnlyHost(hostName))
 	}
 
 	store := storage.New(p.State)
@@ -2667,17 +2759,11 @@ func cmdDeploy(p *paths.Paths, args []string) int {
 	}
 	defer lk.Release()
 
-	results, err := deploy.Deploy(cert, store, os.Stdout)
+	results, err := deploy.Deploy(cert, store, os.Stdout, opts...)
+	printDeployResults(results, true)
 	if err != nil {
-		logError(err)
+		logError(withRemoteHint(err))
 		return 1
-	}
-	for _, r := range results {
-		if len(r.Changed) == 0 {
-			fmt.Printf("  %s: up to date\n", r.Target)
-		} else {
-			fmt.Printf("  %s: updated %v\n", r.Target, r.Changed)
-		}
 	}
 	return 0
 }

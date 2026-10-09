@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -244,6 +245,13 @@ func overlayDeploy(base, over *Deploy, certName string, strict bool) []error {
 			errs = append(errs, fmt.Errorf("certificate %q: groups set conflicting mode for deploy %q", certName, base.Name))
 		} else {
 			base.Mode = over.Mode
+		}
+	}
+	if len(over.Hosts) > 0 {
+		if strict && len(base.Hosts) > 0 && !slices.Equal(base.Hosts, over.Hosts) {
+			errs = append(errs, fmt.Errorf("certificate %q: groups set conflicting host for deploy %q", certName, base.Name))
+		} else {
+			base.Hosts = slices.Clone(over.Hosts)
 		}
 	}
 	return errs

@@ -6,8 +6,8 @@ gibcert.scfg \- configuration file for gibcert
 uses the scfg configuration format. Blocks use braces, directives are
 whitespace separated, and values with spaces can be quoted.
 .PP
-Top-level directives are include, ca, account, provider, challenge, and
-certificate.
+Top-level directives are include, ca, account, provider, challenge, group, host,
+and certificate.
 .SH INCLUDES
 .TP
 .B include \fIPATH\fR
@@ -295,7 +295,10 @@ incomplete legacy metadata do not establish issuer ownership.
 .B deploy \fINAME\fR { ... }
 Deployment target. Optional; a certificate with no deploy blocks is still
 issued and stored under the state directory, but no files are written
-elsewhere.
+elsewhere. A deploy may list
+.B host
+names to install on remote hosts. See
+.B DEPLOY.
 .TP
 .B reload \fICOMMAND\fR
 Command run once per apply/renew run when any deploy on this certificate
@@ -474,6 +477,48 @@ report retained backup paths and suppress recovery hooks. Multi-file updates
 are not crash-atomic; use stop/start hooks to prevent concurrent service reads.
 Metadata is saved only after the success hook completes. A failed success hook
 leaves the complete new set installed and is retried by a later deploy.
+.PP
+With host set, the target is installed on the named remote hosts instead of this
+machine, by running gibcert receive over ssh. before and after hooks of such a
+target run on the remote host as the ssh login user; reload hooks always run
+locally. Remote destination paths must be absolute POSIX-style paths. In a
+group, a deploy's host list is replaced, not merged, by a certificate deploy of
+the same name. Path collisions are detected per host.
+.SH HOST
+.TP
+.B host \fINAME\fR { ... }
+Remote machine that deploy targets can install on over ssh. Uses the system ssh
+binary with strict host key checking and no prompts. May be unreferenced.
+.PP
+Directives are:
+.TP
+.B address \fIHOST\fR
+Host name or address passed to ssh. Required; must not start with \-.
+.TP
+.B user \fINAME\fR
+Login user.
+.TP
+.B port \fIPORT\fR
+SSH port.
+.TP
+.B identity\-file \fIPATH\fR
+SSH private key. Must be an absolute path.
+.TP
+.B known\-hosts \fIPATH\fR
+known_hosts file used to verify the host key. Must be an absolute path.
+.TP
+.B timeout \fIDURATION\fR
+SSH connect timeout. Default 30s. The installation itself is not time-limited.
+.TP
+.B remote\-command \fICOMMAND\fR
+Command that runs gibcert on the remote host. Default gibcert on the remote
+PATH. May contain only A\-Za\-z0\-9_./+\-.
+.PP
+See
+.I docs/remote\-deploy.md
+and
+.BR gibcert (1)
+.BR "host test" .
 .SH TLSA
 .TP
 .B tlsa { ... }

@@ -28,6 +28,7 @@ type Config struct {
 	Providers       []*Provider
 	Groups          []*Group
 	Certificates    []*Certificate
+	Hosts           []*Host
 	GlobalChallenge *GlobalChallenge
 }
 
@@ -45,6 +46,8 @@ type Config struct {
 //   - Deploys: merged by name, field by field. A certificate deploy with the
 //     same name as an inherited one overrides only the fields it sets; a deploy
 //     with a new name is added alongside the inherited ones.
+//     Within a deploy, hosts are not merged: a deploy that sets "host"
+//     replaces the inherited host list as a whole.
 type Group struct {
 	Name           string
 	Account        string
@@ -237,6 +240,39 @@ type Deploy struct {
 	Mode      *fs.FileMode
 	Before    string
 	After     string
+	// Hosts names the remote hosts the target installs on; empty means this
+	// machine.
+	Hosts []string
+}
+
+// DefaultHostTimeout is the Host.Timeout applied when none is configured.
+const DefaultHostTimeout = 30 * time.Second
+
+// DefaultHostRemoteCommand is the Host.RemoteCommand applied when none is
+// configured.
+const DefaultHostRemoteCommand = "gibcert"
+
+// Host is a remote machine that deploy targets can install material on over
+// SSH. Defined by a top-level "host NAME { ... }" block.
+type Host struct {
+	Name          string
+	Address       string        // DNS name or IP; required
+	User          string        // optional ssh login user
+	Port          int           // 0 = ssh default
+	IdentityFile  string        // optional absolute path to ssh private key
+	KnownHosts    string        // optional absolute path to a known_hosts file
+	Timeout       time.Duration // ssh connect timeout; installation itself is not time-limited
+	RemoteCommand string        // path of the gibcert binary on the host
+}
+
+// FindHost returns the host named name, or nil if there is none.
+func (c *Config) FindHost(name string) *Host {
+	for _, h := range c.Hosts {
+		if h.Name == name {
+			return h
+		}
+	}
+	return nil
 }
 
 type GlobalChallenge struct {
