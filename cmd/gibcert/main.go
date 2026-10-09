@@ -235,7 +235,7 @@ func cmdHelp(args []string) int {
 		fmt.Println("usage: gibcert dns-persist install [--print] <certificate>")
 		fmt.Println("       gibcert dns-persist check <certificate>")
 	case "tlsa":
-		fmt.Println("usage: gibcert tlsa reconcile <certificate>")
+		fmt.Println(tlsaReconcileUsage)
 	case "deploy":
 		fmt.Println("usage: gibcert deploy <certificate>")
 	case "revoke":
@@ -726,9 +726,11 @@ func cmdDNSPersistCheck(cfg *config.Config, store *storage.Store, args []string)
 	return 0
 }
 
+const tlsaReconcileUsage = "usage: gibcert tlsa reconcile (--all | <certificate>...)"
+
 func cmdTLSA(p *paths.Paths, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+		fmt.Fprintln(os.Stderr, tlsaReconcileUsage)
 		return 2
 	}
 	cfg, err := loadCfg(p)
@@ -746,25 +748,39 @@ func cmdTLSA(p *paths.Paths, args []string) int {
 		return cmdTLSAReconcile(cfg, store, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "gibcert tlsa: unknown command %q\n", args[0])
-		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+		fmt.Fprintln(os.Stderr, tlsaReconcileUsage)
 		return 2
 	}
 }
 
 func cmdTLSAReconcile(cfg *config.Config, store *storage.Store, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gibcert tlsa reconcile <certificate>")
+	fs := flag.NewFlagSet("tlsa reconcile", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, tlsaReconcileUsage) }
+	all := false
+	fs.BoolVar(&all, "all", false, "reconcile every certificate with a tlsa block")
+	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	name := args[0]
-	if err := validateCertificateArg(name); err != nil {
-		logError(err)
+	names := fs.Args()
+	if all == (len(names) > 0) {
+		fmt.Fprintln(os.Stderr, tlsaReconcileUsage)
 		return 2
 	}
-	cert, err := findCert(cfg, name)
+	for _, name := range names {
+		if err := validateCertificateArg(name); err != nil {
+			logError(err)
+			return 2
+		}
+	}
+	certs, err := selectTLSACerts(cfg, all, names)
 	if err != nil {
 		logError(err)
 		return 1
+	}
+	if len(certs) == 0 {
+		fmt.Println("no certificates with a tlsa block")
+		return 0
 	}
 	lk, err := lock.Acquire(store.LockPath(), 5*time.Second)
 	if err != nil {
@@ -773,13 +789,78 @@ func cmdTLSAReconcile(cfg *config.Config, store *storage.Store, args []string) i
 	}
 	defer lk.Release()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if err := reconcileConfiguredTLSA(ctx, store, cfg, cert, os.Stdout); err != nil {
-		logError(err)
+	var reconciled, skipped, failed int
+	for _, cert := range certs {
+		if all && !hasStoredMaterial(store, cert.Name) {
+			fmt.Printf("tlsa skipped: %s (no stored certificate)\n", cert.Name)
+			skipped++
+			continue
+		}
+		if err := reconcileTLSACert(cfg, store, cert); err != nil {
+			logError(fmt.Errorf("%s: %w", cert.Name, err))
+			failed++
+			continue
+		}
+		reconciled++
+	}
+	if all || len(certs) > 1 {
+		fmt.Printf("tlsa reconcile: %d reconciled, %d skipped, %d failed\n", reconciled, skipped, failed)
+	}
+	if failed > 0 {
 		return 1
 	}
 	return 0
+}
+
+// selectTLSACerts resolves the certificates a tlsa reconcile run covers. Named
+// certificates are all checked before any DNS work starts, so a typo in a long
+// list does not leave the run half done. Repeated names are reconciled once.
+func selectTLSACerts(cfg *config.Config, all bool, names []string) ([]*config.Certificate, error) {
+	var certs []*config.Certificate
+	if all {
+		for _, cert := range cfg.Certificates {
+			if cert.TLSA != nil {
+				certs = append(certs, cert)
+			}
+		}
+		return certs, nil
+	}
+	seen := map[string]bool{}
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		cert, err := findCert(cfg, name)
+		if err != nil {
+			return nil, err
+		}
+		if cert.TLSA == nil {
+			return nil, fmt.Errorf("certificate %q has no tlsa block", name)
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}
+
+// hasStoredMaterial reports whether the canonical certificate and key exist.
+// Stat errors other than absence count as present so the reconcile reports them.
+func hasStoredMaterial(store *storage.Store, name string) bool {
+	p := store.CertPaths(name)
+	for _, path := range []string{p.Cert, p.Key} {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
+}
+
+// reconcileTLSACert reconciles one certificate with its own timeout so a slow
+// DNS provider cannot consume the budget of the certificates after it.
+func reconcileTLSACert(cfg *config.Config, store *storage.Store, cert *config.Certificate) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	return reconcileConfiguredTLSA(ctx, store, cfg, cert, os.Stdout)
 }
 
 // reconcileConfiguredTLSA republishes cert's TLSA records from its stored

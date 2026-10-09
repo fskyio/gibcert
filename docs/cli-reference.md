@@ -115,11 +115,23 @@ The certificate's ACME account must already exist locally (run `gibcert apply` o
 
 Look up the `_validation-persist.<domain>` TXT record for each name in the certificate and verify it authorizes the configured account at the configured CA. Wildcard names require a matching `policy=wildcard` record. Exit status `1` if any record is missing or does not match.
 
-### `gibcert tlsa reconcile <certificate>`
+### `gibcert tlsa reconcile (--all | <certificate>...)`
 
-Reconcile DANE TLSA records for one configured certificate using stored canonical certificate material.
+Reconcile DANE TLSA records for the named configured certificates, or for every configured certificate with a `tlsa` block, using stored canonical certificate material.
 
-This command does not issue, renew, or deploy the certificate. It reads the stored `cert.pem` and `privkey.pem`, ensures the current and staged next-key TLSA records are published, removes stale records known from gibcert metadata, and writes refreshed TLSA metadata. It is useful after a DNS provider or network failure interrupted TLSA publishing after certificate material had already been stored, and to apply `tlsa` changes such as `ttl` or `type` before the next renewal. `apply` and `renew` run the same reconciliation automatically when the published owners differ from the configured `names` and ports.
+This command does not issue, renew, or deploy certificates. For each certificate it reads the stored `cert.pem` and `privkey.pem`, ensures the current and staged next-key TLSA records are published through the certificate's configured `tlsa` provider, removes stale records known from gibcert metadata, and writes refreshed TLSA metadata. It is useful after a DNS provider or network failure interrupted TLSA publishing after certificate material had already been stored, after pointing `tlsa` blocks at a new DNS provider, and to apply `tlsa` changes such as `ttl` or `type` before the next renewal. Records left at a previous provider are not removed. `apply` and `renew` run the same reconciliation automatically when the published owners differ from the configured `names` and ports.
+
+| Flag | Description |
+| --- | --- |
+| `--all` | Reconcile every configured certificate that has a `tlsa` block. Cannot be combined with certificate names. |
+
+Certificates are processed one at a time, in the order given (configuration order with `--all`), under one state lock. Each has its own 10 minute limit.
+
+Named certificates are checked before any DNS change is made: an unknown name, or a certificate without a `tlsa` block, fails the whole run with status `1`. A name given more than once is reconciled once.
+
+A failure while reconciling one certificate is reported with its name, and the remaining certificates are still processed. Exit status is `1` if any certificate failed. When more than one certificate is selected, or with `--all`, a final line summarizes how many were reconciled, skipped, and failed.
+
+With `--all`, a certificate that has no stored certificate or key yet is reported as skipped rather than failed. A certificate named explicitly in that state fails.
 
 ### `gibcert deploy <certificate>`
 

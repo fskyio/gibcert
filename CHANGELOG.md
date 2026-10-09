@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `names` directive in the `tlsa` block to publish TLSA records under explicit
   (sub)domains instead of the certificate's names. Wildcard names and IP
   addresses are rejected.
+- `tlsa reconcile` accepts several certificate names or `--all` to reconcile
+  every certificate with a `tlsa` block in one run, continuing past individual
+  failures and reporting a summary.
 
 ### Changed
 - `plan`, `apply`, and `renew` reconcile TLSA records for current certificates

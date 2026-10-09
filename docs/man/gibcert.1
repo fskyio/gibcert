@@ -105,14 +105,19 @@ Look up the standing TXT record for each name in the certificate and verify
 it authorizes the configured account at the configured CA. Wildcard names
 require policy=wildcard.
 .TP
-.B tlsa reconcile \fICERTIFICATE\fR
-Reconcile DANE TLSA records for one configured certificate using stored
-canonical certificate material. This does not issue, renew, or deploy the
-certificate; it republishes current and staged next-key TLSA records, removes
-stale records known from metadata, and refreshes TLSA metadata. Apply and renew
-run this automatically when published owners differ from the configured names
-and ports; use it to apply other tlsa changes, such as ttl or type, before the
-next renewal.
+.B tlsa reconcile (\fB\-\-all\fR | \fICERTIFICATE\fR...)
+Reconcile DANE TLSA records for the named configured certificates, or with
+\fB\-\-all\fR for every configured certificate with a tlsa block, using stored
+canonical certificate material. This does not issue, renew, or deploy; it
+republishes current and staged next-key TLSA records through the configured
+tlsa provider, removes stale records known from metadata, and refreshes TLSA
+metadata. Certificates are processed in order under one lock and a failure does
+not stop the others; the exit status is 1 if any failed. Named certificates are
+validated before any DNS change. With \fB\-\-all\fR, certificates with no stored
+certificate or key are skipped; a named one fails. Apply and renew run this
+automatically when published owners differ from the configured names and
+ports; use it to apply other tlsa changes, such as ttl or type, before the next
+renewal.
 .TP
 .B deploy \fICERTIFICATE\fR
 Deploy stored canonical material for one configured certificate.

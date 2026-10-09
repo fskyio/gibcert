@@ -73,6 +73,7 @@ complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen
 
 # tlsa subcommands and cert arg
 complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and not __fish_seen_subcommand_from reconcile' -a reconcile -d 'reconcile stored certificate TLSA records'
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -l all -d 'reconcile every certificate with a tlsa block'
 complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -a '(__gibcert_certs)'
 
 # commands that take a cert name

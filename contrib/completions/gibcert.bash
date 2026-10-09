@@ -45,7 +45,13 @@ _gibcert() {
     tlsa)
         case $cword in
         2) COMPREPLY=($(compgen -W "reconcile" -- "$cur")) ;;
-        3) COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur")) ;;
+        *)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--all" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+            fi
+            ;;
         esac
         ;;
     import)

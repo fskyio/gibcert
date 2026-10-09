@@ -88,7 +88,13 @@ _gibcert() {
     tlsa)
         case $cword in
         2) COMPREPLY=($(compgen -W "reconcile" -- "$cur")) ;;
-        3) COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur")) ;;
+        *)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--all" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+            fi
+            ;;
         esac
         ;;
     import)
@@ -210,7 +216,9 @@ _gibcert() {
             tlsaargs)
                 case $words[1] in
                 reconcile)
-                    _arguments '1: :_gibcert_certs'
+                    _arguments \
+                        '--all[reconcile every certificate with a tlsa block]' \
+                        '*: :_gibcert_certs'
                     ;;
                 esac
                 ;;
@@ -428,6 +436,7 @@ complete -c gibcert -n '__fish_seen_subcommand_from dns-persist; and __fish_seen
 
 # tlsa subcommands and cert arg
 complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and not __fish_seen_subcommand_from reconcile' -a reconcile -d 'reconcile stored certificate TLSA records'
+complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -l all -d 'reconcile every certificate with a tlsa block'
 complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -a '(__gibcert_certs)'
 
 # commands that take a cert name

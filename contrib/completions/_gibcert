@@ -100,7 +100,9 @@ _gibcert() {
             tlsaargs)
                 case $words[1] in
                 reconcile)
-                    _arguments '1: :_gibcert_certs'
+                    _arguments \
+                        '--all[reconcile every certificate with a tlsa block]' \
+                        '*: :_gibcert_certs'
                     ;;
                 esac
                 ;;
