@@ -22,6 +22,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -92,6 +93,65 @@ func TestIssueCreatesLocalCAAndLeafCertificate(t *testing.T) {
 	}
 	if got, want := meta.IssuerType, "local"; got != want {
 		t.Fatalf("meta IssuerType: got %q, want %q", got, want)
+	}
+}
+
+func TestIssuePromotesStagedKeyAndKeepsTLSAMetadata(t *testing.T) {
+	store := storage.New(t.TempDir())
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ca := &config.CA{Name: "dev", Type: "local", CommonName: "test dev CA", ValidFor: 365 * 24 * time.Hour}
+	cert := &config.Certificate{
+		Name:     "example.com",
+		CA:       "dev",
+		Names:    []string{"example.com"},
+		ValidFor: 30 * 24 * time.Hour,
+		Key:      config.KeySpec{Type: "ecdsa", Curve: "p256"},
+	}
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	if err := Issue(cert, ca, store, IssueOptions{Out: io.Discard, Now: now}); err != nil {
+		t.Fatalf("initial Issue: %v", err)
+	}
+	meta, err := store.LoadCertMeta(cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.TLSA = &storage.CertTLSAMeta{TTL: 60, NextValue: "3 1 1 aa"}
+	if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := store.CertPaths(cert.Name)
+	if err := storage.WriteKey(paths.KeyNext, staged); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Issue(cert, ca, store, IssueOptions{Out: io.Discard, Now: now.Add(time.Hour), Key: staged, StagedKey: true}); err != nil {
+		t.Fatalf("staged Issue: %v", err)
+	}
+	if leaf := readPEMCert(t, paths.Cert); !staged.PublicKey.Equal(leaf.PublicKey) {
+		t.Fatal("leaf was not signed for the staged key")
+	}
+	live, err := storage.ReadKey(paths.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged.PublicKey.Equal(live.Public()) {
+		t.Fatal("staged key was not promoted to the live key")
+	}
+	if _, err := os.Stat(paths.KeyNext); !os.IsNotExist(err) {
+		t.Fatalf("staged key file still present after promotion: %v", err)
+	}
+	meta, err = store.LoadCertMeta(cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.TLSA == nil || meta.TLSA.NextValue != "3 1 1 aa" {
+		t.Fatalf("TLSA metadata not preserved across signing: %#v", meta.TLSA)
 	}
 }
 

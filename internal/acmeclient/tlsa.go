@@ -123,6 +123,32 @@ func readStoredLeaf(path string) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
+// SelectTLSAKey chooses the key for the next issuance of a TLSA-managed
+// certificate and reports the choice to out. With newKey the pre-publish wait
+// is bypassed: it only warns and returns an empty decision, leaving key
+// generation to the caller.
+func SelectTLSAKey(cert *config.Certificate, store *storage.Store, newKey bool, out io.Writer, now time.Time) (TLSAKeyDecision, error) {
+	if newKey {
+		fmt.Fprintf(out, "%s: warning: --new-key forces a fresh key without the TLSA pre-publish wait; DANE clients with cached records may fail until TTL expires\n", cert.Name)
+		return TLSAKeyDecision{}, nil
+	}
+	d, err := pickTLSAKey(cert, store, now)
+	if err != nil {
+		return TLSAKeyDecision{}, err
+	}
+	switch {
+	case d.StagedKey:
+		fmt.Fprintf(out, "%s: rotating to pre-published next key\n", cert.Name)
+	case d.NextNotYet:
+		fmt.Fprintf(out, "%s: next-key TLSA not yet matured, reusing current key this cycle\n", cert.Name)
+	case d.NextMissing && d.ReusedKey:
+		fmt.Fprintf(out, "%s: no staged next key, reusing current key (will pre-publish a new next key)\n", cert.Name)
+	case d.Bootstrap:
+		fmt.Fprintf(out, "%s: TLSA bootstrap (no prior key)\n", cert.Name)
+	}
+	return d, nil
+}
+
 // pickTLSAKey selects the cert key to use for a TLSA-managed cert. It prefers
 // a staged next-key whose TLSA was pre-published more than TTL ago, falls back
 // to the current live key, and finally generates a new key on bootstrap.
@@ -170,7 +196,8 @@ func pickTLSAKey(cert *config.Certificate, store *storage.Store, now time.Time) 
 	return TLSAKeyDecision{Key: fresh, Bootstrap: true}, nil
 }
 
-// reconcileTLSA publishes the current and next-key TLSA records, removes any
+// reconcileTLSA publishes the current and next-key TLSA records under the
+// configured names (defaulting to the certificate names), removes any
 // previously published records that no longer match, generates a new staged
 // next key if needed, and returns the updated TLSA metadata. The caller saves
 // it as part of the cert metadata.
@@ -215,7 +242,7 @@ func reconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 		return nil, err
 	}
 
-	desired := composeDesiredTLSA(cert.Names, spec.Ports, []string{currentValue, nextValue})
+	desired := composeDesiredTLSA(cert.TLSAOwners(), []string{currentValue, nextValue})
 
 	for _, rec := range desired {
 		fmt.Fprintf(out, "tlsa publish: %s IN TLSA %s\n", rec.Owner, rec.RData)
@@ -292,20 +319,7 @@ func tlsaValue(spec *config.TLSASpec, pub crypto.PublicKey) (string, error) {
 	return challenge.TLSARData(spec.Usage, spec.Selector, spec.MatchingType, data), nil
 }
 
-func composeDesiredTLSA(names []string, ports []config.TLSAPort, values []string) []storage.TLSARecord {
-	seenOwner := map[string]bool{}
-	var owners []string
-	for _, name := range names {
-		base := strings.TrimPrefix(name, "*.")
-		for _, p := range ports {
-			owner := challenge.TLSAOwner(p.Port, p.Protocol, base)
-			if seenOwner[owner] {
-				continue
-			}
-			seenOwner[owner] = true
-			owners = append(owners, owner)
-		}
-	}
+func composeDesiredTLSA(owners []string, values []string) []storage.TLSARecord {
 	var out []storage.TLSARecord
 	for _, owner := range owners {
 		for _, v := range values {
@@ -315,9 +329,12 @@ func composeDesiredTLSA(names []string, ports []config.TLSAPort, values []string
 	return out
 }
 
+// containsTLSA reports whether set holds rec. Owner names compare
+// case-insensitively, as in DNS, so records stored under a differently cased
+// owner are never removed as stale right after being republished.
 func containsTLSA(set []storage.TLSARecord, rec storage.TLSARecord) bool {
 	for _, r := range set {
-		if r.Owner == rec.Owner && r.RData == rec.RData {
+		if strings.EqualFold(r.Owner, rec.Owner) && r.RData == rec.RData {
 			return true
 		}
 	}

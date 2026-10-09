@@ -16,7 +16,9 @@
 package config
 
 import (
+	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 )
 
@@ -160,6 +162,7 @@ type Issuer struct {
 type TLSASpec struct {
 	Provider     string
 	Ports        []TLSAPort
+	Names        []string // base (sub)domains for TLSA owners; empty = certificate names
 	TTL          int
 	Usage        int
 	Selector     int
@@ -169,6 +172,35 @@ type TLSASpec struct {
 type TLSAPort struct {
 	Port     int
 	Protocol string
+}
+
+// TLSAOwners returns the owner names, with trailing dots, under which TLSA
+// records are published for c: one per (port, name) pair over the tlsa names,
+// or over the certificate names when none are configured. Wildcard prefixes
+// are stripped, names are lowercased, and duplicates are dropped, so equal
+// owners compare equal as strings. It returns nil when c has no tlsa block.
+func (c *Certificate) TLSAOwners() []string {
+	if c.TLSA == nil {
+		return nil
+	}
+	names := c.TLSA.Names
+	if len(names) == 0 {
+		names = c.Names
+	}
+	seen := map[string]bool{}
+	var owners []string
+	for _, name := range names {
+		base := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(name, "*."), "."))
+		for _, p := range c.TLSA.Ports {
+			owner := fmt.Sprintf("_%d._%s.%s.", p.Port, strings.ToLower(p.Protocol), base)
+			if seen[owner] {
+				continue
+			}
+			seen[owner] = true
+			owners = append(owners, owner)
+		}
+	}
+	return owners
 }
 
 type KeySpec struct {

@@ -145,6 +145,104 @@ certificate example.com {
 	}
 }
 
+func TestParseTLSANames(t *testing.T) {
+	src := `
+account letsencrypt {
+  ca letsencrypt
+  email admin@example.com
+}
+
+provider dynamic-dns {
+  type dns
+  driver rfc2136
+  server 192.0.2.53
+  zone example.com
+  secret tsig-key {
+    file /etc/gibcert/rfc2136.key
+  }
+}
+
+certificate example.com {
+  account letsencrypt
+  names example.com www.example.com
+  challenge dns-01 {
+    provider dynamic-dns
+  }
+  tlsa {
+    provider dynamic-dns
+    port 25
+    names mail.example.com smtp.example.com
+    ttl 3600
+  }
+}
+`
+	cfg, err := Read(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c := cfg.Certificates[0]
+	if c.TLSA == nil {
+		t.Fatal("tlsa: got nil")
+	}
+	if got, want := c.TLSA.Names, []string{"mail.example.com", "smtp.example.com"}; !equalSlices(got, want) {
+		t.Errorf("tlsa names: got %v, want %v", got, want)
+	}
+
+	bad := strings.Replace(src, "names mail.example.com smtp.example.com", "names", 1)
+	if _, err := Read(strings.NewReader(bad)); err == nil {
+		t.Error("Read accepted tlsa names without values")
+	}
+
+	ip := strings.Replace(src, "names mail.example.com smtp.example.com", "names 192.0.2.1", 1)
+	cfg, err = Read(strings.NewReader(ip))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted an IP address as a tlsa name")
+	}
+
+	wildcard := strings.Replace(src, "names mail.example.com smtp.example.com", "names *.example.com", 1)
+	cfg, err = Read(strings.NewReader(wildcard))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wildcard") {
+		t.Errorf("Validate of wildcard tlsa name got %v, want wildcard rejection", err)
+	}
+}
+
+func TestCertificateTLSAOwners(t *testing.T) {
+	cert := &Certificate{
+		Names: []string{"*.example.com", "Example.com"},
+		TLSA: &TLSASpec{Ports: []TLSAPort{
+			{Port: 25, Protocol: "tcp"},
+			{Port: 853, Protocol: "UDP"},
+		}},
+	}
+	// Certificate names: the wildcard and differently cased apex collapse to
+	// one owner per port.
+	if got, want := cert.TLSAOwners(), []string{"_25._tcp.example.com.", "_853._udp.example.com."}; !equalSlices(got, want) {
+		t.Errorf("default owners: got %v, want %v", got, want)
+	}
+
+	cert.TLSA.Names = []string{"MX1.example.com.", "mx2.example.com", "mx1.example.com"}
+	want := []string{
+		"_25._tcp.mx1.example.com.", "_853._udp.mx1.example.com.",
+		"_25._tcp.mx2.example.com.", "_853._udp.mx2.example.com.",
+	}
+	if got := cert.TLSAOwners(); !equalSlices(got, want) {
+		t.Errorf("configured owners: got %v, want %v", got, want)
+	}
+
+	if got := (&Certificate{Names: []string{"example.com"}}).TLSAOwners(); got != nil {
+		t.Errorf("owners without tlsa block: got %v, want nil", got)
+	}
+}
+
 func TestLoadIncludesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	confDir := filepath.Join(dir, "conf.d")

@@ -39,6 +39,12 @@ type IssueOptions struct {
 	Out    io.Writer
 	NewKey bool
 	Now    time.Time
+	// Key, when set, is a certificate key chosen by the caller, such as the
+	// TLSA rotation key. ReusedKey marks it as the current live key; StagedKey
+	// marks it as the staged next key, which is promoted on success.
+	Key       crypto.Signer
+	ReusedKey bool
+	StagedKey bool
 }
 
 type CAStatus struct {
@@ -84,10 +90,10 @@ func Issue(cert *config.Certificate, ca *config.CA, store *storage.Store, opts I
 		return err
 	}
 
-	var certKey crypto.Signer
-	reusedKey := false
+	certKey := opts.Key
+	reusedKey := certKey != nil && opts.ReusedKey
 	paths := store.CertPaths(cert.Name)
-	if cert.Key.Reuse && !opts.NewKey {
+	if certKey == nil && cert.Key.Reuse && !opts.NewKey {
 		certKey, err = storage.ReadKey(paths.Key)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("read existing cert key: %w", err)
@@ -113,7 +119,22 @@ func Issue(cert *config.Certificate, ca *config.CA, store *storage.Store, opts I
 		return fmt.Errorf("create cert dir: %w", err)
 	}
 	var archivedKey string
-	if !reusedKey {
+	switch {
+	case opts.Key != nil && opts.StagedKey:
+		var promoted bool
+		archivedKey, promoted, err = storage.PromoteNextKey(paths, now)
+		if err != nil {
+			return fmt.Errorf("promote staged privkey: %w", err)
+		}
+		if archivedKey != "" {
+			fmt.Fprintf(out, "archived previous privkey: %s\n", archivedKey)
+		}
+		if !promoted {
+			if err := storage.WriteKey(paths.Key, certKey); err != nil {
+				return fmt.Errorf("write privkey: %w", err)
+			}
+		}
+	case !reusedKey:
 		var archived bool
 		archivedKey, archived, err = storage.ArchivePrivateKey(paths.Key, now)
 		if err != nil {
@@ -122,9 +143,13 @@ func Issue(cert *config.Certificate, ca *config.CA, store *storage.Store, opts I
 		if archived {
 			fmt.Fprintf(out, "archived previous privkey: %s\n", archivedKey)
 		}
-	}
-	if err := storage.WriteKey(paths.Key, certKey); err != nil {
-		return fmt.Errorf("write privkey: %w", err)
+		if err := storage.WriteKey(paths.Key, certKey); err != nil {
+			return fmt.Errorf("write privkey: %w", err)
+		}
+	default:
+		if err := storage.WriteKey(paths.Key, certKey); err != nil {
+			return fmt.Errorf("write privkey: %w", err)
+		}
 	}
 	if err := storage.WriteSingleCertDER(paths.Cert, leafDER, 0o644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
@@ -154,6 +179,7 @@ func Issue(cert *config.Certificate, ca *config.CA, store *storage.Store, opts I
 	}
 	if existing, err := store.LoadCertMeta(cert.Name); err == nil {
 		meta.Deploys = existing.Deploys
+		meta.TLSA = existing.TLSA
 	}
 	if err := store.SaveCertMeta(cert.Name, meta); err != nil {
 		return fmt.Errorf("write cert metadata: %w", err)

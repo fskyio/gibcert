@@ -18,7 +18,9 @@ package renew
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"strings"
@@ -77,6 +79,37 @@ func ShouldRenew(cfg *config.Config, cert *config.Certificate, store *storage.St
 		d = ApplyARI(d, meta.ARI, c.SerialNumber.String(), now)
 	}
 	return d
+}
+
+// TLSAReconcileReason reports why the TLSA records published for a current
+// certificate no longer match its configuration, or "" when they match. Only
+// owner names are compared: records are stale when a configured (port, name)
+// owner has none published, or when records remain under an owner that is no
+// longer configured. Callers check ShouldRenew first; issuing a due
+// certificate reconciles its TLSA records itself.
+func TLSAReconcileReason(cert *config.Certificate, store *storage.Store) string {
+	if cert.TLSA == nil {
+		return ""
+	}
+	meta, err := store.LoadCertMeta(cert.Name)
+	switch {
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return "certificate metadata unreadable"
+	case err != nil || meta.TLSA == nil:
+		return "TLSA records not published"
+	}
+	want := map[string]bool{}
+	for _, owner := range cert.TLSAOwners() {
+		want[owner] = true
+	}
+	have := map[string]bool{}
+	for _, rec := range meta.TLSA.Published {
+		have[strings.ToLower(rec.Owner)] = true
+	}
+	if !maps.Equal(want, have) {
+		return "published TLSA owners differ from configuration"
+	}
+	return ""
 }
 
 // namesMatch compares SAN sets, never CommonName or metadata's requested names.

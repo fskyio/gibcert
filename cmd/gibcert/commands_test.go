@@ -452,6 +452,9 @@ func TestCommandStatusHelpers(t *testing.T) {
 	if planNeedsConfirmation(plan.Plan{Actions: []plan.Action{{Subject: "deploy web", Verb: "update"}}}) {
 		t.Fatal("deploy-only plan should not need confirmation")
 	}
+	if !planNeedsConfirmation(plan.Plan{Actions: []plan.Action{{Subject: "tlsa example.com", Verb: "reconcile"}}}) {
+		t.Fatal("TLSA reconcile plan should need confirmation")
+	}
 }
 
 func TestConfirmationRejectsNonTTY(t *testing.T) {

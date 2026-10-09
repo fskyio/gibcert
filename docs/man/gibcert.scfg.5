@@ -481,6 +481,13 @@ or powerdns.
 Repeatable. Port and transport for which TLSA records are published.
 Protocol defaults to tcp; tcp, udp, and sctp are accepted.
 .TP
+.B names \fINAME\fR...
+Base (sub)domains under which TLSA records are published, replacing the
+default of the certificate's names. Names are case-insensitive; wildcard names
+and IP addresses are rejected. When the configured names or ports change,
+apply and renew republish the records and remove those left under owners that
+are no longer configured.
+.TP
 .B ttl \fISECONDS\fR
 TLSA record TTL. Default is 3600. Must be less than the certificate renewal
 window.
@@ -495,7 +502,13 @@ privkey.pem (live) and privkey-next.pem (staged). The staged key's TLSA
 fingerprint is pre-published in DNS. When the next renewal is due and the
 staged TLSA has propagated for more than ttl, gibcert issues against the
 staged key, promotes it, generates a new staged next-key, and publishes its
-TLSA. The retired key's TLSA is removed.
+TLSA. The retired key's TLSA is removed. Local CA certificates follow the same
+rotation.
+.PP
+Between renewals, apply and renew republish TLSA records when the owners last
+published differ from the configured names and ports, or when a current
+certificate has no published records yet. Other tlsa changes, such as ttl or
+type, take effect at the next issuance or with gibcert tlsa reconcile.
 .SH DURATIONS
 Expiry-related fields accept Go duration syntax or an integer day suffix such
 as 30d. Other duration fields use Go duration syntax such as 120s or 5m.

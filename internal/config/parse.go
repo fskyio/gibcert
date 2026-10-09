@@ -613,6 +613,11 @@ func parseTLSA(d *scfg.Directive) (*TLSASpec, error) {
 				return nil, fmt.Errorf("tlsa: port %q: %w", s, err)
 			}
 			t.Ports = append(t.Ports, TLSAPort{Port: port, Protocol: proto})
+		case "names":
+			if len(c.Params) == 0 {
+				return nil, fmt.Errorf("tlsa: names requires at least one value")
+			}
+			t.Names = append([]string(nil), c.Params...)
 		case "ttl":
 			s, err := singleParam(c)
 			if err != nil {

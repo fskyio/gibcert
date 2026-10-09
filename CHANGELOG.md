@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `names` directive in the `tlsa` block to publish TLSA records under explicit
+  (sub)domains instead of the certificate's names. Wildcard names and IP
+  addresses are rejected.
+
+### Changed
+- `plan`, `apply`, and `renew` reconcile TLSA records for current certificates
+  when the published owners differ from the configured `tlsa` names and ports,
+  or when no records were published yet, instead of waiting for the next
+  renewal. Records left under owners that are no longer configured are removed.
+
 ### Fixed
+- Publish TLSA records for local CA certificates and rotate them to the
+  pre-published next key on renewal; signing previously skipped TLSA and
+  dropped its metadata.
+- Lowercase TLSA owner names and compare them case-insensitively, so changing
+  only the case of a name no longer removes the records just republished.
 - Release Windows and Plan 9 lock ownership on process termination, allowing
   later commands to acquire the lock safely.
 - Reject colliding deploy destinations and restrict inherited private-key modes
