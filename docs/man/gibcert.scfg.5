@@ -157,6 +157,9 @@ Optional server line in the nsupdate script.
 Optional zone line in the nsupdate script.
 .PP
 The first secret with a file value is passed to nsupdate with -k.
+.PP
+When zone is set, all TLSA changes of one step go out as a single nsupdate
+message. Without zone, each record is sent in its own message.
 .SS powerdns and pdns
 Fields are:
 .TP
@@ -172,6 +175,10 @@ TXT record TTL. Default is 60.
 The api-key secret is required. The zone is detected automatically by listing
 zones on the server and choosing the longest suffix match for the challenge
 FQDN.
+.PP
+TLSA changes of one step are sent as one PATCH per zone. Records of the same
+name and type are merged into one RRset replacement. If any name has no
+matching zone, nothing is changed.
 .SH TOP-LEVEL CHALLENGE
 .TP
 .B challenge http-01 { webroot \fIPATH\fR }

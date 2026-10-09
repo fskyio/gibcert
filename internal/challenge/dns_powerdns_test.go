@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,11 +29,18 @@ import (
 	"gitfield.org/fsky/gibcert/internal/config"
 )
 
+type fakePowerDNSPatch struct {
+	zone   string
+	rrsets []powerDNSRRset
+}
+
+// fakePowerDNS holds RRsets for every zone it lists, keyed by "name|TYPE".
 type fakePowerDNS struct {
-	mu     sync.Mutex
-	rrsets map[string][]powerDNSRecord
-	apiKey string
-	calls  []string
+	mu      sync.Mutex
+	rrsets  map[string][]powerDNSRecord
+	apiKey  string
+	calls   []string
+	patches []fakePowerDNSPatch
 }
 
 func newFakePowerDNS(apiKey string) *fakePowerDNS {
@@ -44,9 +52,10 @@ func newFakePowerDNS(apiKey string) *fakePowerDNS {
 
 func (f *fakePowerDNS) handler(t *testing.T) http.Handler {
 	const (
-		listPath = "/api/v1/servers/localhost/zones"
-		zonePath = "/api/v1/servers/localhost/zones/example.com."
+		listPath   = "/api/v1/servers/localhost/zones"
+		zonePrefix = listPath + "/"
 	)
+	zones := []string{"other.example.", "example.com."}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-API-Key"); got != f.apiKey {
 			t.Errorf("X-API-Key: got %q, want %q", got, f.apiKey)
@@ -54,15 +63,17 @@ func (f *fakePowerDNS) handler(t *testing.T) http.Handler {
 			return
 		}
 		if r.URL.Path == listPath && r.Method == http.MethodGet {
+			var out []map[string]string
+			for _, z := range zones {
+				out = append(out, map[string]string{"name": z})
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]map[string]string{
-				{"name": "other.example."},
-				{"name": "example.com."},
-			})
+			_ = json.NewEncoder(w).Encode(out)
 			return
 		}
-		if r.URL.Path != zonePath {
-			t.Errorf("path: got %q, want %q", r.URL.Path, zonePath)
+		zone := strings.TrimPrefix(r.URL.Path, zonePrefix)
+		if zone == r.URL.Path || !slices.Contains(zones, zone) {
+			t.Errorf("unexpected path %q", r.URL.Path)
 			http.NotFound(w, r)
 			return
 		}
@@ -79,8 +90,11 @@ func (f *fakePowerDNS) handler(t *testing.T) http.Handler {
 			var out struct {
 				RRsets []rr `json:"rrsets"`
 			}
-			for name, recs := range f.rrsets {
-				out.RRsets = append(out.RRsets, rr{Name: name, Type: "TXT", Records: recs})
+			for key, recs := range f.rrsets {
+				name, typ, _ := strings.Cut(key, "|")
+				if name == zone || strings.HasSuffix(name, "."+zone) {
+					out.RRsets = append(out.RRsets, rr{Name: name, Type: typ, Records: recs})
+				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(out)
@@ -92,12 +106,14 @@ func (f *fakePowerDNS) handler(t *testing.T) http.Handler {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			f.patches = append(f.patches, fakePowerDNSPatch{zone: zone, rrsets: body.RRsets})
 			for _, s := range body.RRsets {
+				key := s.Name + "|" + s.Type
 				switch s.ChangeType {
 				case "REPLACE":
-					f.rrsets[s.Name] = s.Records
+					f.rrsets[key] = s.Records
 				case "DELETE":
-					delete(f.rrsets, s.Name)
+					delete(f.rrsets, key)
 				default:
 					http.Error(w, "bad changetype", http.StatusBadRequest)
 					return
@@ -134,7 +150,7 @@ func TestDNSPowerDNSPresentAndCleanup(t *testing.T) {
 	}
 
 	fake.mu.Lock()
-	recs := fake.rrsets["_acme-challenge.example.com."]
+	recs := fake.rrsets["_acme-challenge.example.com.|TXT"]
 	fake.mu.Unlock()
 	if len(recs) != 1 || recs[0].Content != `"token-1"` {
 		t.Fatalf("after present: got %+v, want single \"token-1\"", recs)
@@ -142,7 +158,7 @@ func TestDNSPowerDNSPresentAndCleanup(t *testing.T) {
 
 	cleanup()
 	fake.mu.Lock()
-	_, present := fake.rrsets["_acme-challenge.example.com."]
+	_, present := fake.rrsets["_acme-challenge.example.com.|TXT"]
 	fake.mu.Unlock()
 	if present {
 		t.Fatalf("after cleanup: rrset should be deleted")
@@ -151,7 +167,7 @@ func TestDNSPowerDNSPresentAndCleanup(t *testing.T) {
 
 func TestDNSPowerDNSMergesExistingTXT(t *testing.T) {
 	fake := newFakePowerDNS("topsecret")
-	fake.rrsets["_acme-challenge.example.com."] = []powerDNSRecord{{Content: `"existing"`}}
+	fake.rrsets["_acme-challenge.example.com.|TXT"] = []powerDNSRecord{{Content: `"existing"`}}
 	srv := httptest.NewServer(fake.handler(t))
 	defer srv.Close()
 
@@ -162,7 +178,7 @@ func TestDNSPowerDNSMergesExistingTXT(t *testing.T) {
 	}
 
 	fake.mu.Lock()
-	recs := fake.rrsets["_acme-challenge.example.com."]
+	recs := fake.rrsets["_acme-challenge.example.com.|TXT"]
 	fake.mu.Unlock()
 	if len(recs) != 2 {
 		t.Fatalf("after present: got %d records, want 2: %+v", len(recs), recs)
@@ -173,7 +189,7 @@ func TestDNSPowerDNSMergesExistingTXT(t *testing.T) {
 
 	cleanup()
 	fake.mu.Lock()
-	recs = fake.rrsets["_acme-challenge.example.com."]
+	recs = fake.rrsets["_acme-challenge.example.com.|TXT"]
 	fake.mu.Unlock()
 	if len(recs) != 1 || recs[0].Content != `"existing"` {
 		t.Fatalf("after cleanup: got %+v, want only \"existing\"", recs)
@@ -212,7 +228,7 @@ func TestDNSPowerDNSAddAndRemoveRecord(t *testing.T) {
 		t.Fatalf("AddRecord: %v", err)
 	}
 	fake.mu.Lock()
-	recs := fake.rrsets["_443._tcp.example.com."]
+	recs := fake.rrsets["_443._tcp.example.com.|TXT"]
 	fake.mu.Unlock()
 	if len(recs) != 1 || recs[0].Content != `"tlsa-value"` {
 		t.Fatalf("after add: got %+v, want single record", recs)
@@ -222,7 +238,7 @@ func TestDNSPowerDNSAddAndRemoveRecord(t *testing.T) {
 		t.Fatalf("RemoveRecord: %v", err)
 	}
 	fake.mu.Lock()
-	_, present := fake.rrsets["_443._tcp.example.com."]
+	_, present := fake.rrsets["_443._tcp.example.com.|TXT"]
 	fake.mu.Unlock()
 	if present {
 		t.Fatal("after remove: rrset should be deleted")
@@ -293,5 +309,137 @@ func TestDNSPowerDNSAuthFailureSurfaced(t *testing.T) {
 	_, err := d.Present(context.Background(), Request{FQDN: "_acme-challenge.example.com", Value: "v"})
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("Present: want 401 error, got %v", err)
+	}
+}
+
+func powerDNSContents(recs []powerDNSRecord) []string {
+	out := make([]string, len(recs))
+	for i, r := range recs {
+		out[i] = r.Content
+	}
+	return out
+}
+
+func TestDNSPowerDNSApplyEditsMergesRRsetsIntoOnePatch(t *testing.T) {
+	fake := newFakePowerDNS("topsecret")
+	fake.rrsets["_443._tcp.example.com.|TLSA"] = []powerDNSRecord{{Content: "3 1 1 old"}}
+	fake.rrsets["_443._tcp.example.com.|TXT"] = []powerDNSRecord{{Content: `"keep"`}}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	edit := func(owner, rdata string) EditRequest {
+		return EditRequest{Owner: owner, RecordType: "TLSA", RData: rdata, TTL: 300}
+	}
+	ops := []EditOp{
+		{EditRequest: edit("_443._tcp.example.com", "3 1 1 new1")},
+		{EditRequest: edit("_25._tcp.example.com", "3 1 1 new1")},
+		{EditRequest: edit("_443._TCP.example.com", "3 1 1 new2")},
+		{Remove: true, EditRequest: edit("_443._tcp.example.com", "3 1 1 old")},
+	}
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	if err := ApplyEdits(context.Background(), d, ops); err != nil {
+		t.Fatalf("ApplyEdits: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if want := []string{http.MethodGet, http.MethodPatch}; !slices.Equal(fake.calls, want) {
+		t.Fatalf("zone requests = %v, want %v", fake.calls, want)
+	}
+	if len(fake.patches) != 1 || fake.patches[0].zone != "example.com." || len(fake.patches[0].rrsets) != 2 {
+		t.Fatalf("patches = %+v, want one patch of two RRsets on example.com.", fake.patches)
+	}
+	for _, rrset := range fake.patches[0].rrsets {
+		if rrset.Type != "TLSA" || rrset.TTL != 300 || rrset.ChangeType != "REPLACE" {
+			t.Fatalf("rrset = %+v, want TLSA REPLACE with ttl 300", rrset)
+		}
+	}
+	if got, want := powerDNSContents(fake.rrsets["_443._tcp.example.com.|TLSA"]), []string{"3 1 1 new1", "3 1 1 new2"}; !slices.Equal(got, want) {
+		t.Fatalf("_443 TLSA = %v, want %v", got, want)
+	}
+	if got, want := powerDNSContents(fake.rrsets["_25._tcp.example.com.|TLSA"]), []string{"3 1 1 new1"}; !slices.Equal(got, want) {
+		t.Fatalf("_25 TLSA = %v, want %v", got, want)
+	}
+	if got, want := powerDNSContents(fake.rrsets["_443._tcp.example.com.|TXT"]), []string{`"keep"`}; !slices.Equal(got, want) {
+		t.Fatalf("TXT at the same owner = %v, want it untouched: %v", got, want)
+	}
+}
+
+func TestDNSPowerDNSApplyEditsAppliesOpsInOrder(t *testing.T) {
+	fake := newFakePowerDNS("topsecret")
+	fake.rrsets["_443._tcp.example.com.|TLSA"] = []powerDNSRecord{{Content: "3 1 1 x"}}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	req := func(owner, rdata string) EditRequest {
+		return EditRequest{Owner: owner, RecordType: "TLSA", RData: rdata}
+	}
+	ops := []EditOp{
+		{Remove: true, EditRequest: req("_443._tcp.example.com", "3 1 1 x")},
+		{EditRequest: req("_443._tcp.example.com", "3 1 1 x")},
+		{EditRequest: req("_25._tcp.example.com", "3 1 1 y")},
+		{Remove: true, EditRequest: req("_25._tcp.example.com", "3 1 1 y")},
+	}
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	if err := d.ApplyEdits(context.Background(), ops); err != nil {
+		t.Fatalf("ApplyEdits: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if got, want := powerDNSContents(fake.rrsets["_443._tcp.example.com.|TLSA"]), []string{"3 1 1 x"}; !slices.Equal(got, want) {
+		t.Fatalf("remove then add = %v, want the record kept: %v", got, want)
+	}
+	if recs, ok := fake.rrsets["_25._tcp.example.com.|TLSA"]; ok {
+		t.Fatalf("add then remove left %+v, want the RRset deleted", recs)
+	}
+}
+
+func TestDNSPowerDNSApplyEditsSendsOnePatchPerZone(t *testing.T) {
+	fake := newFakePowerDNS("topsecret")
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	req := func(owner string) EditOp {
+		return EditOp{EditRequest: EditRequest{Owner: owner, RecordType: "TLSA", RData: "3 1 1 z"}}
+	}
+	ops := []EditOp{req("_443._tcp.example.com"), req("_443._tcp.www.other.example"), req("_25._tcp.example.com")}
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	if err := d.ApplyEdits(context.Background(), ops); err != nil {
+		t.Fatalf("ApplyEdits: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.patches) != 2 {
+		t.Fatalf("patches = %+v, want one per zone", fake.patches)
+	}
+	if p := fake.patches[0]; p.zone != "example.com." || len(p.rrsets) != 2 {
+		t.Fatalf("first patch = %+v, want two RRsets on example.com.", p)
+	}
+	if p := fake.patches[1]; p.zone != "other.example." || len(p.rrsets) != 1 {
+		t.Fatalf("second patch = %+v, want one RRset on other.example.", p)
+	}
+}
+
+func TestDNSPowerDNSApplyEditsChangesNothingWhenAnOpHasNoZone(t *testing.T) {
+	fake := newFakePowerDNS("topsecret")
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	ops := []EditOp{
+		{EditRequest: EditRequest{Owner: "_443._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 z"}},
+		{EditRequest: EditRequest{Owner: "_443._tcp.unrelated.test", RecordType: "TLSA", RData: "3 1 1 z"}},
+	}
+	d := &DNSPowerDNS{Provider: providerForFake(srv.URL), Out: io.Discard}
+	err := d.ApplyEdits(context.Background(), ops)
+	if err == nil || !strings.Contains(err.Error(), "unrelated.test") {
+		t.Fatalf("ApplyEdits error = %v, want no zone for unrelated.test", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.patches) != 0 || len(fake.rrsets) != 0 {
+		t.Fatalf("DNS changed despite the failed batch: patches=%+v rrsets=%+v", fake.patches, fake.rrsets)
 	}
 }

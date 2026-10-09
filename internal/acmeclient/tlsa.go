@@ -246,31 +246,32 @@ func reconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 
 	for _, rec := range desired {
 		fmt.Fprintf(out, "tlsa publish: %s IN TLSA %s\n", rec.Owner, rec.RData)
-		if err := editor.AddRecord(ctx, challenge.EditRequest{
-			Owner:      rec.Owner,
-			RecordType: "TLSA",
-			RData:      rec.RData,
-			TTL:        spec.TTL,
-		}); err != nil {
-			return nil, fmt.Errorf("publish tlsa %s: %w", rec.Owner, err)
-		}
+	}
+	if err := challenge.ApplyEdits(ctx, editor, tlsaEditOps(desired, spec.TTL, false)); err != nil {
+		return nil, fmt.Errorf("publish tlsa: %w", err)
 	}
 
 	published := append([]storage.TLSARecord(nil), desired...)
 	if previous != nil {
+		var stale []storage.TLSARecord
 		for _, old := range previous.Published {
 			if containsTLSA(desired, old) {
 				continue
 			}
 			fmt.Fprintf(out, "tlsa remove stale: %s IN TLSA %s\n", old.Owner, old.RData)
-			if err := editor.RemoveRecord(ctx, challenge.EditRequest{
-				Owner:      old.Owner,
-				RecordType: "TLSA",
-				RData:      old.RData,
-				TTL:        spec.TTL,
-			}); err != nil {
-				fmt.Fprintf(out, "warning: remove stale tlsa %s: %v (will retry)\n", old.Owner, err)
-				published = append(published, old)
+			stale = append(stale, old)
+		}
+		// Removal runs after publication and is not fatal. A batch can fail as a
+		// whole, so on failure retry record by record: only the records that
+		// still fail stay listed for the next run, and one bad record cannot
+		// hold back the rest. Removal is idempotent, so retrying is harmless.
+		if err := challenge.ApplyEdits(ctx, editor, tlsaEditOps(stale, spec.TTL, true)); err != nil {
+			fmt.Fprintf(out, "warning: batched stale tlsa removal failed: %v; retrying individually\n", err)
+			for _, old := range stale {
+				if err := challenge.ApplyEdits(ctx, editor, tlsaEditOps([]storage.TLSARecord{old}, spec.TTL, true)); err != nil {
+					fmt.Fprintf(out, "warning: remove stale tlsa %s: %v (will retry)\n", old.Owner, err)
+					published = append(published, old)
+				}
 			}
 		}
 	}
@@ -291,6 +292,19 @@ func reconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 		NextPublishedAt: nextPublishedAt,
 		Published:       published,
 	}, nil
+}
+
+func tlsaEditOps(records []storage.TLSARecord, ttl int, remove bool) []challenge.EditOp {
+	ops := make([]challenge.EditOp, len(records))
+	for i, rec := range records {
+		ops[i] = challenge.EditOp{Remove: remove, EditRequest: challenge.EditRequest{
+			Owner:      rec.Owner,
+			RecordType: "TLSA",
+			RData:      rec.RData,
+			TTL:        ttl,
+		}}
+	}
+	return ops
 }
 
 func loadOrGenerateNextKey(paths storage.CertPaths, spec config.KeySpec) (crypto.Signer, bool, error) {

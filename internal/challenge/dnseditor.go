@@ -17,6 +17,7 @@ package challenge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -31,6 +32,55 @@ type EditRequest struct {
 type DNSEditor interface {
 	AddRecord(ctx context.Context, req EditRequest) error
 	RemoveRecord(ctx context.Context, req EditRequest) error
+}
+
+// EditOp is one record change inside a batch. A zero Remove adds the record.
+type EditOp struct {
+	Remove bool
+	EditRequest
+}
+
+// BatchEditor is implemented by editors that can apply several record changes
+// in fewer round trips than one AddRecord or RemoveRecord call per record.
+type BatchEditor interface {
+	// ApplyEdits applies ops in order. Ops that touch the same RRset are
+	// merged, so the result matches applying them one at a time.
+	ApplyEdits(ctx context.Context, ops []EditOp) error
+}
+
+// ApplyEdits applies ops through editor, using its batch support when it has
+// any. Editors without it get one call per op. That fallback attempts every
+// op even after a failure, so one persistently failing record cannot hide the
+// rest, and returns all failures joined. Ops must be idempotent, which
+// AddRecord and RemoveRecord already are.
+func ApplyEdits(ctx context.Context, editor DNSEditor, ops []EditOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	if batch, ok := editor.(BatchEditor); ok {
+		return batch.ApplyEdits(ctx, ops)
+	}
+	return applyEditsSequentially(ctx, editor, ops)
+}
+
+func applyEditsSequentially(ctx context.Context, editor DNSEditor, ops []EditOp) error {
+	var errs []error
+	for _, op := range ops {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		verb := "add"
+		call := editor.AddRecord
+		if op.Remove {
+			verb = "remove"
+			call = editor.RemoveRecord
+		}
+		if err := call(ctx, op.EditRequest); err != nil {
+			errs = append(errs, fmt.Errorf("%s %s %s: %w", verb, op.Owner, op.RecordType, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // CapabilityReporter is implemented by editors that can report which operations

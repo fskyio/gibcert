@@ -16,6 +16,7 @@
 package acmeclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -432,6 +433,7 @@ type tlsaTestPowerDNS struct {
 	apiKey  string
 	records map[string][]tlsaTestPowerDNSRecord
 	changes []string // "CHANGETYPE owner" per patched RRset
+	patches int      // PATCH requests received
 }
 
 func newTLSATestPowerDNS(t *testing.T, apiKey string) *tlsaTestPowerDNS {
@@ -472,6 +474,7 @@ func (p *tlsaTestPowerDNS) serveZone(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"rrsets": rrsets})
 	case http.MethodPatch:
+		p.patches++
 		var body struct {
 			RRsets []tlsaTestPowerDNSRRset `json:"rrsets"`
 		}
@@ -508,4 +511,128 @@ type tlsaTestPowerDNSRRset struct {
 type tlsaTestPowerDNSRecord struct {
 	Content  string `json:"content"`
 	Disabled bool   `json:"disabled"`
+}
+
+type tlsaBatchFixture struct {
+	store *storage.Store
+	cfg   *config.Config
+	cert  *config.Certificate
+	pdns  *tlsaTestPowerDNS
+}
+
+func newTLSABatchFixture(t *testing.T, names []string) *tlsaBatchFixture {
+	t.Helper()
+	store := storage.New(t.TempDir())
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	certFixture := testCertDER(t, "example.com", nil, nil)
+	paths := store.CertPaths("example.com")
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteKey(paths.Key, certFixture.key); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteSingleCertDER(paths.Cert, certFixture.der, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pdns := newTLSATestPowerDNS(t, "topsecret")
+	srv := httptest.NewServer(pdns)
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{Providers: []*config.Provider{{
+		Name:    "powerdns",
+		Type:    "dns",
+		Driver:  "powerdns",
+		Fields:  map[string][]string{"api-url": {srv.URL}, "server-id": {"localhost"}},
+		Secrets: []*config.Secret{{Name: "api-key", Value: "topsecret"}},
+	}}}
+	cert := &config.Certificate{
+		Name:  "example.com",
+		Names: []string{"example.com"},
+		Key:   config.KeySpec{Type: "ecdsa", Curve: "p256"},
+		TLSA: &config.TLSASpec{
+			Provider:     "powerdns",
+			Ports:        []config.TLSAPort{{Port: 25, Protocol: "tcp"}},
+			Names:        names,
+			TTL:          60,
+			Usage:        3,
+			Selector:     1,
+			MatchingType: 1,
+		},
+	}
+	cfg.Certificates = []*config.Certificate{cert}
+	return &tlsaBatchFixture{store: store, cfg: cfg, cert: cert, pdns: pdns}
+}
+
+func (f *tlsaBatchFixture) run(t *testing.T, out io.Writer) {
+	t.Helper()
+	if err := ReconcileTLSA(context.Background(), f.store, f.cfg, f.cert, TLSAReconcileOptions{Out: out}); err != nil {
+		t.Fatalf("ReconcileTLSA: %v", err)
+	}
+}
+
+func TestReconcileTLSASendsOnePatchForPublishAndOneForRemoval(t *testing.T) {
+	f := newTLSABatchFixture(t, []string{"a.example.com", "b.example.com"})
+
+	f.run(t, io.Discard)
+	if f.pdns.patches != 1 || len(f.pdns.changes) != 2 {
+		t.Fatalf("first run: %d patches changing %v, want one patch changing both owners", f.pdns.patches, f.pdns.changes)
+	}
+
+	f.cert.TLSA.Names = []string{"a.example.com", "c.example.com"}
+	f.pdns.patches, f.pdns.changes = 0, nil
+	f.run(t, io.Discard)
+	if f.pdns.patches != 2 {
+		t.Fatalf("second run sent %d patches (%v), want one to publish and one to remove", f.pdns.patches, f.pdns.changes)
+	}
+	if _, ok := f.pdns.records["_25._tcp.b.example.com.|TLSA"]; ok {
+		t.Fatal("records under the dropped name were not removed")
+	}
+	for _, owner := range []string{"_25._tcp.a.example.com.|TLSA", "_25._tcp.c.example.com.|TLSA"} {
+		if got := len(f.pdns.records[owner]); got != 2 {
+			t.Fatalf("%s has %d records, want 2", owner, got)
+		}
+	}
+}
+
+func TestReconcileTLSAFailedStaleBatchKeepsOnlyFailingRecords(t *testing.T) {
+	f := newTLSABatchFixture(t, nil)
+	f.run(t, io.Discard)
+
+	// One stale record sits in a zone the server has, the other in a zone it
+	// does not, which fails the whole batch at planning time.
+	removable := storage.TLSARecord{Owner: "_25._tcp.old.example.com.", RData: "3 1 1 aa"}
+	orphan := storage.TLSARecord{Owner: "_25._tcp.old.unknown.test.", RData: "3 1 1 aa"}
+	f.pdns.records["_25._tcp.old.example.com.|TLSA"] = []tlsaTestPowerDNSRecord{{Content: removable.RData}}
+	meta, err := f.store.LoadCertMeta(f.cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.TLSA.Published = append(meta.TLSA.Published, orphan, removable)
+	if err := f.store.SaveCertMeta(f.cert.Name, *meta); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	f.run(t, &out)
+
+	if _, ok := f.pdns.records["_25._tcp.old.example.com.|TLSA"]; ok {
+		t.Fatal("removable stale record was held back by the failing one")
+	}
+	meta, err = f.store.LoadCertMeta(f.cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keptOrphan, keptRemovable bool
+	for _, rec := range meta.TLSA.Published {
+		keptOrphan = keptOrphan || rec == orphan
+		keptRemovable = keptRemovable || rec == removable
+	}
+	if !keptOrphan || keptRemovable {
+		t.Fatalf("published = %+v, want the unremovable record kept and the removed one dropped", meta.TLSA.Published)
+	}
+	if got := out.String(); !strings.Contains(got, "retrying individually") || !strings.Contains(got, "remove stale tlsa _25._tcp.old.unknown.test.") {
+		t.Fatalf("output missing removal warnings:\n%s", got)
+	}
 }

@@ -165,3 +165,77 @@ cat >/dev/null
 		t.Fatalf("cleanup warning missing:\n%s", got)
 	}
 }
+
+func nsupdateBatchProvider(t *testing.T, withZone bool) (*config.Provider, string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "nsupdate.log")
+	script := filepath.Join(dir, "nsupdate-stub.sh")
+	body := `#!/bin/sh
+cat >> "$LOG"
+echo "---" >> "$LOG"
+case "$FAIL_NSUPDATE" in
+  1) exit 12 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOG", logPath)
+	fields := map[string][]string{"command": {script}, "server": {"192.0.2.53"}}
+	if withZone {
+		fields["zone"] = []string{"example.com"}
+	}
+	return &config.Provider{Name: "rfc2136-test", Type: "dns", Driver: "rfc2136", Fields: fields}, logPath
+}
+
+func TestDNSNSUpdateApplyEditsSendsOneMessageWithZone(t *testing.T) {
+	provider, logPath := nsupdateBatchProvider(t, true)
+	d := &DNSNSUpdate{Provider: provider}
+	ops := []EditOp{
+		{EditRequest: EditRequest{Owner: "_443._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 aa", TTL: 300}},
+		{EditRequest: EditRequest{Owner: "_443._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 bb"}},
+		{Remove: true, EditRequest: EditRequest{Owner: "_25._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 cc", TTL: 300}},
+	}
+	if err := ApplyEdits(context.Background(), d, ops); err != nil {
+		t.Fatalf("ApplyEdits: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "server 192.0.2.53\n" +
+		"zone example.com.\n" +
+		"update add _443._tcp.example.com. 300 TLSA 3 1 1 aa\n" +
+		"update add _443._tcp.example.com. 60 TLSA 3 1 1 bb\n" +
+		"update delete _25._tcp.example.com. TLSA 3 1 1 cc\n" +
+		"send\n" +
+		"---\n"
+	if string(raw) != want {
+		t.Fatalf("nsupdate input:\n%s\nwant:\n%s", raw, want)
+	}
+
+	t.Setenv("FAIL_NSUPDATE", "1")
+	if err := ApplyEdits(context.Background(), d, ops); err == nil || !strings.Contains(err.Error(), "nsupdate batch") {
+		t.Fatalf("ApplyEdits failure error = %v", err)
+	}
+}
+
+func TestDNSNSUpdateApplyEditsWithoutZoneSendsOneMessagePerOp(t *testing.T) {
+	provider, logPath := nsupdateBatchProvider(t, false)
+	d := &DNSNSUpdate{Provider: provider}
+	ops := []EditOp{
+		{EditRequest: EditRequest{Owner: "_443._tcp.example.com", RecordType: "TLSA", RData: "3 1 1 aa"}},
+		{EditRequest: EditRequest{Owner: "_443._tcp.example.net", RecordType: "TLSA", RData: "3 1 1 aa"}},
+	}
+	if err := ApplyEdits(context.Background(), d, ops); err != nil {
+		t.Fatalf("ApplyEdits: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), "send\n---\n"); got != 2 {
+		t.Fatalf("nsupdate ran %d times, want one message per op:\n%s", got, raw)
+	}
+}

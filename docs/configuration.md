@@ -318,6 +318,11 @@ Fields:
 
 The first secret with a `file` value is passed to nsupdate with `-k`.
 
+When `zone` is set, gibcert sends all TLSA changes of one step (publishing, or
+removing stale records) as a single nsupdate message, which the server applies
+atomically. Without `zone`, nsupdate picks the zone from the first update in a
+message, so gibcert sends one message per record instead.
+
 ### DNS drivers `powerdns` and `pdns`
 
 Use the PowerDNS authoritative HTTP API. `powerdns` and `pdns` are aliases.
@@ -348,6 +353,10 @@ Fields:
 The zone is detected automatically by listing zones on the server and picking
 the longest suffix match for the challenge FQDN, so one provider block can
 cover any zone the API key has access to.
+
+TLSA changes of one step are sent as one `PATCH` per zone, with one zone listing
+and one zone read. Records of the same name and type are merged into a single
+RRset replacement. If any name has no matching zone, nothing is changed.
 
 Secrets:
 

@@ -221,6 +221,10 @@ For TLSA publication, gibcert patch-adds the desired TLSA member with
 `ttl_policy: exact`. Removal patches omit TTL so they cannot change the TTL of
 remaining members.
 
+`gibdns/draft-01` mutations concern exactly one RRset, so gibcert sends one
+patch per TLSA member. The built-in `powerdns` and `rfc2136` drivers batch
+TLSA changes instead; see [configuration](configuration.md).
+
 ## Invocation and output
 
 For every request, gibcert:

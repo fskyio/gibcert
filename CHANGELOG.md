@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the published owners differ from the configured `tlsa` names and ports,
   or when no records were published yet, instead of waiting for the next
   renewal. Records left under owners that are no longer configured are removed.
+- TLSA publishing and stale-record removal send DNS changes in batches for the
+  `powerdns` and `rfc2136`/`nsupdate` drivers: one `PATCH` per zone, or one
+  nsupdate message when `zone` is set, instead of one request per record.
+  `exec` providers still receive one patch per RRset member, since
+  `gibdns/draft-01` has no multi-RRset operation.
 
 ### Fixed
 - Publish TLSA records for local CA certificates and rotate them to the
