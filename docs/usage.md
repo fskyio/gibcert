@@ -392,3 +392,9 @@ group web {
 ```
 
 `reload` can be set on a `group` or a `certificate`; grouped values are inherited and combined with the certificate's own. A reload command runs only if at least one deploy on a contributing certificate changed this run, so a no-op run reloads nothing. Because a reload is shared, it carries **no** per-certificate environment: it receives `GIBCERT_HOOK_API`, `GIBCERT_EVENT=reload`, and `GIBCERT_CHANGED_CERTS` (a comma-separated list of the certificates that triggered it), but none of the per-certificate `GIBCERT_CERT*`/path variables. Use a per-deploy `after` hook when you need that context.
+
+Reload hooks always run on the machine running gibcert, including for targets that install on remote hosts. A `reload` is triggered when any of the certificate's local or remote deploys changed. To act on a remote host, use the target's `after` hook, which runs there.
+
+## Remote Deployment
+
+A `deploy` block can install on remote hosts over SSH by naming `host` blocks. Per-deploy `before`/`after` hooks of such a target run on the remote host. See [Remote deploy](remote-deploy.md) for setup, the unprivileged deploy user, and limitations.

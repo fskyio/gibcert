@@ -25,9 +25,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
-
-	"gitfield.org/fsky/gibcert/internal/config"
-	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
 type stagedFile struct {
@@ -40,56 +37,45 @@ type stagedFile struct {
 }
 
 type stagedDeploy struct {
-	files   [6]stagedFile
-	result  Result
-	records []storage.CertDeployMeta
+	files  [6]stagedFile
+	result Result
+	// refuseSymlinks makes a symbolic link at a destination an error rather
+	// than something to replace. Receivers set it so that a destination
+	// planted by another user is never followed.
+	refuseSymlinks bool
 }
 
-func (s *stagedDeploy) prepare(d *config.Deploy, srcCert, srcChain, srcFullchain, srcKey []byte, out io.Writer) error {
-	derCert, derKey, err := derVariants(d, srcCert, srcKey)
+func (s *stagedDeploy) prepare(req Request, out io.Writer) error {
+	uid, gid, err := deployOwnership(req.Owner, req.Group)
 	if err != nil {
 		return err
 	}
-	uid, gid, err := deployOwnership(d)
-	if err != nil {
-		return err
+	s.result.Target = req.Target
+	for i, k := range fileKinds {
+		f := req.file(k.name)
+		s.files[i] = stagedFile{kind: k.name, dst: f.Path, data: f.Data, defaultMode: k.defaultMode}
 	}
-	s.result.Target = d.Name
-	s.files = [6]stagedFile{
-		{kind: "cert", dst: d.Cert, data: srcCert, defaultMode: 0o644},
-		{kind: "chain", dst: d.Chain, data: srcChain, defaultMode: 0o644},
-		{kind: "fullchain", dst: d.Fullchain, data: srcFullchain, defaultMode: 0o644},
-		{kind: "key", dst: d.Key, data: srcKey, defaultMode: 0o600},
-		{kind: "cert-der", dst: d.CertDER, data: derCert, defaultMode: 0o644},
-		{kind: "key-der", dst: d.KeyDER, data: derKey, defaultMode: 0o600},
-	}
-	s.records = make([]storage.CertDeployMeta, 0, len(s.files))
-	now := timeNow()
 	for i := range s.files {
 		file := &s.files[i]
 		if file.dst == "" || len(file.data) == 0 {
 			continue
 		}
-		changed, err := file.prepare(d, uid, gid, out)
+		changed, err := file.prepare(req.Mode, uid, gid, s.refuseSymlinks, out)
 		if err != nil {
 			return fmt.Errorf("%s: %w", file.kind, err)
 		}
 		if changed {
 			s.result.Changed = append(s.result.Changed, file.kind)
 		}
-		s.records = append(s.records, storage.CertDeployMeta{
-			Target: d.Name, Kind: file.kind, Path: file.dst,
-			SHA256: storage.SHA256Hex(file.data), At: now,
-		})
 	}
 	return nil
 }
 
-func (f *stagedFile) prepare(d *config.Deploy, uid, gid int, out io.Writer) (bool, error) {
+func (f *stagedFile) prepare(explicitMode *fs.FileMode, uid, gid int, refuseSymlinks bool, out io.Writer) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(f.dst), 0o755); err != nil {
 		return false, err
 	}
-	existing, err := os.Stat(f.dst)
+	existing, err := statDestination(f.dst, refuseSymlinks)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
@@ -105,7 +91,7 @@ func (f *stagedFile) prepare(d *config.Deploy, uid, gid int, out io.Writer) (boo
 		}
 		oldUID, oldGID = fileOwnership(existing)
 	}
-	mode, err := DesiredMode(f.defaultMode, existing, d)
+	mode, err := desiredMode(f.defaultMode, existing, explicitMode)
 	if err != nil {
 		return false, err
 	}
@@ -121,7 +107,7 @@ func (f *stagedFile) prepare(d *config.Deploy, uid, gid int, out io.Writer) (boo
 	if !changed && !attrsChanged {
 		return false, nil
 	}
-	if existing == nil && d.Mode == nil {
+	if existing == nil && explicitMode == nil {
 		fmt.Fprintf(out, "warning: %s: creating with default mode %#o (set deploy.mode to silence)\n", f.dst, mode)
 	}
 	f.temp, err = stageFile(f.dst, ".gibcert-new-*", f.data, mode, uid, gid)
@@ -150,9 +136,24 @@ func stageFile(dst, pattern string, data []byte, mode fs.FileMode, uid, gid int)
 	name := file.Name()
 	_, err = file.Write(data)
 	if err == nil && (uid != -1 || gid != -1) {
-		err = file.Chown(uid, gid)
-		if err != nil && os.Geteuid() != 0 {
-			err = fmt.Errorf("chown requires privileges (running as non-root): %w", err)
+		// Skip components the file already has: an unprivileged user may not
+		// chown at all, yet already owns the file and may sit in a setgid
+		// directory that gave it the wanted group.
+		curUID, curGID := -1, -1
+		if info, serr := file.Stat(); serr == nil {
+			curUID, curGID = fileOwnership(info)
+		}
+		if uid == curUID {
+			uid = -1
+		}
+		if gid == curGID {
+			gid = -1
+		}
+		if uid != -1 || gid != -1 {
+			err = file.Chown(uid, gid)
+			if err != nil && os.Geteuid() != 0 {
+				err = fmt.Errorf("chown requires privileges (running as non-root): %w", err)
+			}
 		}
 	}
 	if err == nil {
@@ -166,26 +167,39 @@ func stageFile(dst, pattern string, data []byte, mode fs.FileMode, uid, gid int)
 	return name, nil
 }
 
-func deployOwnership(d *config.Deploy) (int, int, error) {
+// statDestination stats dst. With refuseSymlinks a symbolic link is an error
+// instead of being followed.
+func statDestination(dst string, refuseSymlinks bool) (os.FileInfo, error) {
+	if !refuseSymlinks {
+		return os.Stat(dst)
+	}
+	info, err := os.Lstat(dst)
+	if err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("destination %s is a symbolic link", dst)
+	}
+	return info, err
+}
+
+func deployOwnership(owner, group string) (int, int, error) {
 	uid, gid := -1, -1
-	if d.Owner != "" {
-		owner, err := user.Lookup(d.Owner)
+	if owner != "" {
+		u, err := user.Lookup(owner)
 		if err != nil {
-			return -1, -1, fmt.Errorf("owner %q: %w", d.Owner, err)
+			return -1, -1, fmt.Errorf("owner %q: %w", owner, err)
 		}
-		uid, err = strconv.Atoi(owner.Uid)
+		uid, err = strconv.Atoi(u.Uid)
 		if err != nil {
-			return -1, -1, fmt.Errorf("owner %q uid %q: %w", d.Owner, owner.Uid, err)
+			return -1, -1, fmt.Errorf("owner %q uid %q: %w", owner, u.Uid, err)
 		}
 	}
-	if d.Group != "" {
-		group, err := user.LookupGroup(d.Group)
+	if group != "" {
+		g, err := user.LookupGroup(group)
 		if err != nil {
-			return -1, -1, fmt.Errorf("group %q: %w", d.Group, err)
+			return -1, -1, fmt.Errorf("group %q: %w", group, err)
 		}
-		gid, err = strconv.Atoi(group.Gid)
+		gid, err = strconv.Atoi(g.Gid)
 		if err != nil {
-			return -1, -1, fmt.Errorf("group %q gid %q: %w", d.Group, group.Gid, err)
+			return -1, -1, fmt.Errorf("group %q gid %q: %w", group, g.Gid, err)
 		}
 	}
 	return uid, gid, nil

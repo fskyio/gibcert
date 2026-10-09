@@ -51,7 +51,7 @@ _gibcert() {
         cword=$COMP_CWORD
     }
 
-    local commands="help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion"
+    local commands="help version check plan apply issue renew account ca dns-persist tlsa deploy host revoke delete rename list show import completion"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -59,8 +59,26 @@ _gibcert() {
     fi
 
     case ${words[1]} in
-    issue|deploy|revoke|delete|show)
+    show)
         COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        ;;
+    issue|revoke|delete)
+        COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        ;;
+    deploy)
+        if [[ $prev == --host ]]; then
+            COMPREPLY=($(compgen -W "$(gibcert __complete hosts 2>/dev/null)" -- "$cur"))
+        elif [[ $cur == -* ]]; then
+            COMPREPLY=($(compgen -W "--host" -- "$cur"))
+        else
+            COMPREPLY=($(compgen -W "$(gibcert __complete certs 2>/dev/null)" -- "$cur"))
+        fi
+        ;;
+    host)
+        case $cword in
+        2) COMPREPLY=($(compgen -W "test" -- "$cur")) ;;
+        *) COMPREPLY=($(compgen -W "$(gibcert __complete hosts 2>/dev/null)" -- "$cur")) ;;
+        esac
         ;;
     rename)
         case $cword in
@@ -158,8 +176,25 @@ _gibcert() {
 				;;
 			esac
 			;;
-		deploy|show)
+		show)
 			_arguments '1: :_gibcert_certs'
+			;;
+		deploy)
+			_arguments \
+				'--host[only deploy to this host]:host:_gibcert_hosts' \
+				'1: :_gibcert_certs'
+			;;
+		host)
+			_arguments '1: :_gibcert_host_subcmds' '*:: :->hostargs'
+			case $state in
+			hostargs)
+				case $words[1] in
+				test)
+					_arguments '*: :_gibcert_hosts'
+					;;
+				esac
+				;;
+			esac
 			;;
         revoke)
             _arguments \
@@ -301,6 +336,7 @@ _gibcert_commands() {
         'dns-persist:manage dns-persist-01 standing records'
         'tlsa:manage DANE TLSA records'
         'deploy:deploy stored certificate material to configured targets'
+        'host:manage and test remote deploy hosts'
         'revoke:revoke a stored certificate at the CA'
         'delete:remove local certificate state, optionally undeploying'
         'rename:rename stored certificate state'
@@ -354,6 +390,18 @@ _gibcert_tlsa_subcmds() {
     _describe 'subcommand' subcmds
 }
 
+_gibcert_host_subcmds() {
+    local -a subcmds
+    subcmds=('test:check SSH access and deploy permissions on remote hosts')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_hosts() {
+    local -a hosts
+    hosts=(${(f)"$(gibcert __complete hosts 2>/dev/null)"})
+    _describe 'host' hosts
+}
+
 _gibcert_import_sources() {
     _describe 'source' '(acme.sh:import from acme.sh certbot:import from certbot dehydrated:import from dehydrated lego:import from lego pem:import explicit PEM files)'
 }
@@ -364,12 +412,16 @@ _gibcert
 const fishCompletion = `# fish completion for gibcert
 
 function __gibcert_no_subcommand
-    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy revoke delete rename list show import completion
+    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy host revoke delete rename list show import completion
     not __fish_seen_subcommand_from $commands
 end
 
 function __gibcert_certs
     gibcert __complete certs 2>/dev/null
+end
+
+function __gibcert_hosts
+    gibcert __complete hosts 2>/dev/null
 end
 
 function __gibcert_cas
@@ -398,6 +450,7 @@ complete -c gibcert -n __gibcert_no_subcommand -a ca -d 'list, show, or export C
 complete -c gibcert -n __gibcert_no_subcommand -a dns-persist -d 'manage dns-persist-01 standing records'
 complete -c gibcert -n __gibcert_no_subcommand -a tlsa -d 'manage DANE TLSA records'
 complete -c gibcert -n __gibcert_no_subcommand -a deploy -d 'deploy stored certificate material'
+complete -c gibcert -n __gibcert_no_subcommand -a host -d 'manage and test remote deploy hosts'
 complete -c gibcert -n __gibcert_no_subcommand -a revoke -d 'revoke a stored certificate at the CA'
 complete -c gibcert -n __gibcert_no_subcommand -a delete -d 'remove local certificate state'
 complete -c gibcert -n __gibcert_no_subcommand -a rename -d 'rename stored certificate state'
@@ -440,7 +493,15 @@ complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcom
 complete -c gibcert -n '__fish_seen_subcommand_from tlsa; and __fish_seen_subcommand_from reconcile' -a '(__gibcert_certs)'
 
 # commands that take a cert name
-complete -c gibcert -n '__fish_seen_subcommand_from deploy show' -a '(__gibcert_certs)'
+complete -c gibcert -n '__fish_seen_subcommand_from show' -a '(__gibcert_certs)'
+
+# deploy flags and cert arg
+complete -c gibcert -n '__fish_seen_subcommand_from deploy' -l host -d 'only deploy to this host' -x -a '(__gibcert_hosts)'
+complete -c gibcert -n '__fish_seen_subcommand_from deploy' -a '(__gibcert_certs)'
+
+# host subcommands and host name arg
+complete -c gibcert -n '__fish_seen_subcommand_from host; and not __fish_seen_subcommand_from test' -a test -d 'check SSH access and deploy permissions on remote hosts'
+complete -c gibcert -n '__fish_seen_subcommand_from host; and __fish_seen_subcommand_from test' -a '(__gibcert_hosts)'
 
 # revoke flags and cert arg
 complete -c gibcert -n '__fish_seen_subcommand_from revoke' -l reason -d 'revocation reason' -r
@@ -484,7 +545,7 @@ complete -c gibcert -n '__fish_seen_subcommand_from import; and __fish_seen_subc
 complete -c gibcert -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
 
 # help subcommands
-complete -c gibcert -n '__fish_seen_subcommand_from help' -a 'help version check plan apply issue renew account ca dns-persist deploy revoke delete rename list show import completion'
+complete -c gibcert -n '__fish_seen_subcommand_from help' -a 'help version check plan apply issue renew account ca dns-persist deploy host revoke delete rename list show import completion'
 `
 
 func cmdCompletion(args []string) int {
@@ -511,6 +572,14 @@ func cmdInternalComplete(p *paths.Paths, args []string) int {
 		return 0
 	}
 	switch args[0] {
+	case "hosts":
+		cfg, err := config.Load(p.Config)
+		if err != nil {
+			return 0
+		}
+		for _, h := range cfg.Hosts {
+			fmt.Println(h.Name)
+		}
 	case "certs":
 		seen := make(map[string]struct{})
 		cfg, _ := config.Load(p.Config)

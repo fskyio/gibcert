@@ -42,8 +42,25 @@ _gibcert() {
 				;;
 			esac
 			;;
-		deploy|show)
+		show)
 			_arguments '1: :_gibcert_certs'
+			;;
+		deploy)
+			_arguments \
+				'--host[only deploy to this host]:host:_gibcert_hosts' \
+				'1: :_gibcert_certs'
+			;;
+		host)
+			_arguments '1: :_gibcert_host_subcmds' '*:: :->hostargs'
+			case $state in
+			hostargs)
+				case $words[1] in
+				test)
+					_arguments '*: :_gibcert_hosts'
+					;;
+				esac
+				;;
+			esac
 			;;
         revoke)
             _arguments \
@@ -185,6 +202,7 @@ _gibcert_commands() {
         'dns-persist:manage dns-persist-01 standing records'
         'tlsa:manage DANE TLSA records'
         'deploy:deploy stored certificate material to configured targets'
+        'host:manage and test remote deploy hosts'
         'revoke:revoke a stored certificate at the CA'
         'delete:remove local certificate state, optionally undeploying'
         'rename:rename stored certificate state'
@@ -236,6 +254,18 @@ _gibcert_tlsa_subcmds() {
     local -a subcmds
     subcmds=('reconcile:reconcile stored certificate TLSA records')
     _describe 'subcommand' subcmds
+}
+
+_gibcert_host_subcmds() {
+    local -a subcmds
+    subcmds=('test:check SSH access and deploy permissions on remote hosts')
+    _describe 'subcommand' subcmds
+}
+
+_gibcert_hosts() {
+    local -a hosts
+    hosts=(${(f)"$(gibcert __complete hosts 2>/dev/null)"})
+    _describe 'host' hosts
 }
 
 _gibcert_import_sources() {

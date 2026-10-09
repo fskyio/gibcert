@@ -19,12 +19,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/deploy"
 	"gitfield.org/fsky/gibcert/internal/localca"
+	remoteerr "gitfield.org/fsky/gibcert/internal/remote"
 	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
@@ -43,7 +46,7 @@ func (p Plan) Empty() bool {
 	return len(p.Actions) == 0
 }
 
-func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, error) {
+func Compute(cfg *config.Config, store *storage.Store, now time.Time, remote deploy.Remote) (Plan, error) {
 	var p Plan
 	for _, account := range cfg.Accounts {
 		if action := accountAction(account, store); action != nil {
@@ -115,7 +118,7 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, err
 			})
 		}
 
-		actions, err := deployActions(cert, store, certWillChange)
+		actions, err := deployActions(cert, cfg, store, certWillChange, remote)
 		if err != nil {
 			return p, err
 		}
@@ -222,7 +225,7 @@ func localCAAction(ca *config.CA, store *storage.Store, now time.Time) *Action {
 	}
 }
 
-func deployActions(cert *config.Certificate, store *storage.Store, certWillChange bool) ([]Action, error) {
+func deployActions(cert *config.Certificate, cfg *config.Config, store *storage.Store, certWillChange bool, remote deploy.Remote) ([]Action, error) {
 	paths := store.CertPaths(cert.Name)
 	src, err := readSources(paths)
 	if err != nil {
@@ -234,31 +237,19 @@ func deployActions(cert *config.Certificate, store *storage.Store, certWillChang
 
 	var actions []Action
 	for _, d := range cert.Deploys {
-		changes, err := plannedDeployChanges(d, src, certWillChange)
-		if err != nil {
-			return actions, fmt.Errorf("deploy %q: %w", d.Name, err)
-		}
-		if len(changes) == 0 {
-			continue
-		}
-		if d.Before != "" {
-			actions = append(actions, Action{
-				Subject: "hook " + cert.Name + "/" + d.Name,
-				Verb:    "run",
-				Detail:  "before deploy",
-			})
-		}
-		actions = append(actions, Action{
-			Subject: "deploy " + cert.Name + "/" + d.Name,
-			Verb:    "update",
-			Detail:  join(changes),
-		})
-		if d.After != "" {
-			actions = append(actions, Action{
-				Subject: "hook " + cert.Name + "/" + d.Name,
-				Verb:    "run",
-				Detail:  "after deploy",
-			})
+		for _, host := range deploy.Hosts(d) {
+			if host != "" {
+				actions = append(actions, remoteDeployActions(cert, d, host, cfg, store, src, certWillChange, remote)...)
+				continue
+			}
+			changes, err := plannedDeployChanges(d, src, certWillChange)
+			if err != nil {
+				return actions, fmt.Errorf("deploy %q: %w", d.Name, err)
+			}
+			if len(changes) == 0 {
+				continue
+			}
+			actions = append(actions, deployTargetActions(d, targetLabel(cert, d, ""), join(changes))...)
 		}
 	}
 	return actions, nil
@@ -294,13 +285,103 @@ func readSources(paths storage.CertPaths) (sources, error) {
 func pendingDeployActions(cert *config.Certificate) []Action {
 	var actions []Action
 	for _, d := range cert.Deploys {
-		actions = append(actions, Action{
-			Subject: "deploy " + cert.Name + "/" + d.Name,
-			Verb:    "pending",
-			Detail:  "certificate material not stored yet",
-		})
+		for _, host := range deploy.Hosts(d) {
+			actions = append(actions, Action{
+				Subject: "deploy " + targetLabel(cert, d, host),
+				Verb:    "pending",
+				Detail:  "certificate material not stored yet",
+			})
+		}
 	}
 	return actions
+}
+
+func targetLabel(cert *config.Certificate, d *config.Deploy, host string) string {
+	label := cert.Name + "/" + d.Name
+	if host != "" {
+		label += "@" + host
+	}
+	return label
+}
+
+// deployTargetActions returns the before hook, deploy, and after hook actions
+// for one target.
+func deployTargetActions(d *config.Deploy, label, detail string) []Action {
+	var actions []Action
+	if d.Before != "" {
+		actions = append(actions, Action{Subject: "hook " + label, Verb: "run", Detail: "before deploy"})
+	}
+	actions = append(actions, Action{Subject: "deploy " + label, Verb: "update", Detail: detail})
+	if d.After != "" {
+		actions = append(actions, Action{Subject: "hook " + label, Verb: "run", Detail: "after deploy"})
+	}
+	return actions
+}
+
+// remoteDeployActions plans one target on one remote host. Remote problems
+// become actions, never errors.
+func remoteDeployActions(cert *config.Certificate, d *config.Deploy, host string, cfg *config.Config, store *storage.Store, src sources, certWillChange bool, remote deploy.Remote) []Action {
+	label := targetLabel(cert, d, host)
+	problem := func(verb, detail string) []Action {
+		return []Action{{Subject: "deploy " + label, Verb: verb, Detail: detail}}
+	}
+	if remote == nil {
+		return problem("unchecked", "remote hosts are not contacted")
+	}
+	hostCfg := cfg.FindHost(host)
+	if hostCfg == nil {
+		return problem("error", fmt.Sprintf("host %q is not configured", host))
+	}
+	if certWillChange {
+		dests := []struct{ kind, dst string }{
+			{"cert", d.Cert}, {"chain", d.Chain}, {"fullchain", d.Fullchain},
+			{"key", d.Key}, {"cert-der", d.CertDER}, {"key-der", d.KeyDER},
+		}
+		var kinds []string
+		for _, it := range dests {
+			if it.dst != "" {
+				kinds = append(kinds, it.kind)
+			}
+		}
+		if len(kinds) == 0 {
+			return nil
+		}
+		return deployTargetActions(d, label, strings.Join(kinds, ", "))
+	}
+	req, err := deploy.NewRequest(cert.Name, d, deploy.Material{
+		Cert: src.cert, Chain: src.chain, Fullchain: src.fullchain, Key: src.key,
+	})
+	if err != nil {
+		return problem("error", err.Error())
+	}
+	meta, err := store.LoadCertMeta(cert.Name)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return problem("error", err.Error())
+		}
+		meta = &storage.CertMeta{}
+	}
+	req.Unseen = deploy.UnseenKinds(meta, req, host)
+	res, err := remote.Apply(hostCfg, req, true, io.Discard)
+	if err != nil {
+		var rerr *remoteerr.Error
+		if errors.As(err, &rerr) {
+			return problem("error", rerr.Message)
+		}
+		return problem("unreachable", err.Error())
+	}
+	kinds := res.Changed
+	if len(kinds) == 0 {
+		kinds = req.Unseen
+	}
+	if len(kinds) == 0 {
+		return nil
+	}
+	changes := make([]string, len(kinds))
+	for i, k := range kinds {
+		changes[i] = k + " update"
+	}
+	return deployTargetActions(d, label, join(changes))
 }
 
 func plannedDeployChanges(d *config.Deploy, src sources, certWillChange bool) ([]string, error) {

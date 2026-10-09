@@ -170,6 +170,12 @@ func fromBlock(block scfg.Block) (*Config, error) {
 				return nil, err
 			}
 			cfg.GlobalChallenge = gc
+		case "host":
+			h, err := parseHost(d)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Hosts = append(cfg.Hosts, h)
 		default:
 			return nil, fmt.Errorf("unknown top-level directive %q", d.Name)
 		}
@@ -815,6 +821,11 @@ func parseDeploy(d *scfg.Directive) (*Deploy, error) {
 			dep.Before, err = singleParam(c)
 		case "after":
 			dep.After, err = singleParam(c)
+		case "host":
+			if len(c.Params) == 0 {
+				return nil, fmt.Errorf("deploy %q: host: want at least 1 argument", name)
+			}
+			dep.Hosts = append(dep.Hosts, c.Params...)
 		default:
 			return nil, fmt.Errorf("deploy %q: unknown directive %q", name, c.Name)
 		}
@@ -823,6 +834,54 @@ func parseDeploy(d *scfg.Directive) (*Deploy, error) {
 		}
 	}
 	return dep, nil
+}
+
+func parseHost(d *scfg.Directive) (*Host, error) {
+	name, err := singleParam(d)
+	if err != nil {
+		return nil, fmt.Errorf("host: %w", err)
+	}
+	h := &Host{Name: name}
+	for _, c := range d.Children {
+		switch c.Name {
+		case "address":
+			h.Address, err = singleParam(c)
+		case "user":
+			h.User, err = singleParam(c)
+		case "port":
+			var s string
+			if s, err = singleParam(c); err != nil {
+				break
+			}
+			n, perr := strconv.Atoi(s)
+			if perr != nil {
+				return nil, fmt.Errorf("host %q: port %q: %w", name, s, perr)
+			}
+			h.Port = n
+		case "identity-file":
+			h.IdentityFile, err = singleParam(c)
+		case "known-hosts":
+			h.KnownHosts, err = singleParam(c)
+		case "timeout":
+			var s string
+			if s, err = singleParam(c); err != nil {
+				break
+			}
+			dur, perr := time.ParseDuration(s)
+			if perr != nil {
+				return nil, fmt.Errorf("host %q: timeout %q: %w", name, s, perr)
+			}
+			h.Timeout = dur
+		case "remote-command":
+			h.RemoteCommand, err = singleParam(c)
+		default:
+			return nil, fmt.Errorf("host %q: unknown directive %q", name, c.Name)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("host %q: %w", name, err)
+		}
+	}
+	return h, nil
 }
 
 func parseGlobalChallenge(d *scfg.Directive) (*GlobalChallenge, error) {

@@ -175,9 +175,15 @@ func (c *Config) Validate() error {
 	// certificates themselves, so validation sees fully merged fields.
 	errs = append(errs, c.applyGroups()...)
 
+	seenHost := map[string]bool{}
+	for _, h := range c.Hosts {
+		errs = append(errs, validateHost(h, seenHost)...)
+	}
+
 	seenCert := map[string]bool{}
+	type destinationKey struct{ host, path string }
 	type destination struct{ certificate, deploy, kind string }
-	destinations := map[string]destination{}
+	destinations := map[destinationKey]destination{}
 	for _, cert := range c.Certificates {
 		if err := ValidateStateName(cert.Name); err != nil {
 			errs = append(errs, fmt.Errorf("certificate %q: invalid name: %w", cert.Name, err))
@@ -249,6 +255,21 @@ func (c *Config) Validate() error {
 			if err := validateDeploy(d); err != nil {
 				errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %w", cert.Name, d.Name, err))
 			}
+			seenDeployHost := map[string]bool{}
+			for _, h := range d.Hosts {
+				if c.FindHost(h) == nil {
+					errs = append(errs, fmt.Errorf("certificate %q: deploy %q: unknown host %q", cert.Name, d.Name, h))
+				}
+				if seenDeployHost[h] {
+					errs = append(errs, fmt.Errorf("certificate %q: deploy %q: duplicate host %q", cert.Name, d.Name, h))
+				}
+				seenDeployHost[h] = true
+			}
+			// An empty host name is this machine.
+			targets := slices.Compact(slices.Sorted(slices.Values(d.Hosts)))
+			if len(targets) == 0 {
+				targets = []string{""}
+			}
 			for _, output := range []struct{ kind, path string }{
 				{"cert", d.Cert}, {"chain", d.Chain}, {"fullchain", d.Fullchain},
 				{"key", d.Key}, {"cert-der", d.CertDER}, {"key-der", d.KeyDER},
@@ -257,10 +278,17 @@ func (c *Config) Validate() error {
 					continue
 				}
 				path := filepath.Clean(output.path)
-				if previous, ok := destinations[path]; ok {
-					errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %s destination %q collides with certificate %q deploy %q %s", cert.Name, d.Name, output.kind, path, previous.certificate, previous.deploy, previous.kind))
-				} else {
-					destinations[path] = destination{cert.Name, d.Name, output.kind}
+				for _, host := range targets {
+					key := destinationKey{host, path}
+					if previous, ok := destinations[key]; ok {
+						if host == "" {
+							errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %s destination %q collides with certificate %q deploy %q %s", cert.Name, d.Name, output.kind, path, previous.certificate, previous.deploy, previous.kind))
+						} else {
+							errs = append(errs, fmt.Errorf("certificate %q: deploy %q: %s destination %q on host %q collides with certificate %q deploy %q %s", cert.Name, d.Name, output.kind, path, host, previous.certificate, previous.deploy, previous.kind))
+						}
+					} else {
+						destinations[key] = destination{cert.Name, d.Name, output.kind}
+					}
 				}
 			}
 		}
@@ -285,6 +313,70 @@ func (c *Config) Validate() error {
 	errs = append(errs, validateDependencies(c.Certificates)...)
 
 	return errors.Join(errs...)
+}
+
+// validateHost checks one host block and applies defaults. seen tracks the
+// host names already validated.
+func validateHost(h *Host, seen map[string]bool) []error {
+	var errs []error
+	bad := func(format string, args ...any) {
+		errs = append(errs, fmt.Errorf("host %q: "+format, append([]any{h.Name}, args...)...))
+	}
+	if err := ValidateStateName(h.Name); err != nil {
+		bad("invalid name: %v", err)
+	} else if strings.ContainsAny(h.Name, "@ \t\r\n") {
+		bad("invalid name: must not contain '@' or whitespace")
+	}
+	if seen[h.Name] {
+		errs = append(errs, fmt.Errorf("duplicate host %q", h.Name))
+		return errs
+	}
+	seen[h.Name] = true
+
+	switch {
+	case h.Address == "":
+		bad("address is required")
+	case strings.HasPrefix(h.Address, "-"):
+		bad("address %q must not start with '-'", h.Address)
+	case strings.ContainsAny(h.Address, " \t\r\n"):
+		bad("address %q must not contain whitespace", h.Address)
+	}
+	if h.User != "" {
+		switch {
+		case strings.HasPrefix(h.User, "-"):
+			bad("user %q must not start with '-'", h.User)
+		case strings.ContainsAny(h.User, "@: \t\r\n"):
+			bad("user %q must not contain whitespace, '@' or ':'", h.User)
+		}
+	}
+	if h.Port < 0 || h.Port > 65535 {
+		bad("port %d out of range (1-65535)", h.Port)
+	}
+	if h.IdentityFile != "" && !strings.HasPrefix(h.IdentityFile, "/") {
+		bad("identity-file %q must be an absolute path", h.IdentityFile)
+	}
+	if h.KnownHosts != "" && !strings.HasPrefix(h.KnownHosts, "/") {
+		bad("known-hosts %q must be an absolute path", h.KnownHosts)
+	}
+	switch {
+	case h.Timeout < 0:
+		bad("timeout must be >= 0")
+	case h.Timeout == 0:
+		h.Timeout = DefaultHostTimeout
+	}
+	if h.RemoteCommand == "" {
+		h.RemoteCommand = DefaultHostRemoteCommand
+	}
+	if strings.HasPrefix(h.RemoteCommand, "-") {
+		bad("remote-command %q must not start with '-'", h.RemoteCommand)
+	}
+	for _, r := range h.RemoteCommand {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./+-", r)) {
+			bad("remote-command %q contains unsupported character %q (allowed: A-Z a-z 0-9 _ . / + -)", h.RemoteCommand, r)
+			break
+		}
+	}
+	return errs
 }
 
 func ValidateStateName(name string) error {

@@ -112,9 +112,13 @@ func TestDeployRollbackRetainsBackupOnRestoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	req, err := NewRequest(cert.Name, d, Material{Cert: leaf, Fullchain: fullchain, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var staged stagedDeploy
 	defer staged.cleanup()
-	if err := staged.prepare(d, leaf, nil, fullchain, key, io.Discard); err != nil {
+	if err := staged.prepare(req, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if err := staged.install(); err != nil {

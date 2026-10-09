@@ -30,6 +30,12 @@ func Check(cfg *config.Config) error {
 	if os.Geteuid() != 0 {
 		for _, cert := range cfg.Certificates {
 			for _, d := range cert.Deploys {
+				if len(d.Hosts) != 0 {
+					// Ownership of remote files is applied by the receiver as
+					// the remote login user; this machine's privileges are
+					// irrelevant.
+					continue
+				}
 				if d.Owner != "" {
 					errs = append(errs, fmt.Errorf("certificate %q deploy %q: owner %q requires root", cert.Name, d.Name, d.Owner))
 				}

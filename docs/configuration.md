@@ -48,6 +48,7 @@ Top-level directives are:
 - `provider`
 - `challenge`
 - `group`
+- `host`
 - `certificate`
 
 Unknown top-level directives are rejected.
@@ -734,6 +735,56 @@ On Unix-like systems, replacement files preserve the destination's existing owne
 Each target stages every output, mode, and owner/group before running its `before` hook. Files are then replaced by individual atomic renames. An installation failure rolls back earlier replacements; only a completed rollback runs the `after` recovery hook with `GIBCERT_EVENT=rollback-deploy`. Rollback errors report retained backup paths and do not run recovery against a potentially mixed set. This protects against ordinary errors, not a process crash or a concurrent reader between renames; use stop/start hooks when a service must not read during replacement.
 
 Only content differences are reported as changes. Ownership and mode are still reconciled when content is already current. Deployment metadata is saved only after the success hook completes. If that hook fails, the complete new file set remains installed and the hook is retried by a later deploy.
+
+### Remote hosts
+
+`host NAME...` installs the target on the named `host` blocks instead of this machine. It may be repeated; a target without `host` installs locally. See [Remote deploy](remote-deploy.md).
+
+```scfg
+deploy nginx {
+  host web1 web2
+  fullchain /etc/nginx/tls/example.com/fullchain.pem
+  key /etc/nginx/tls/example.com/privkey.pem
+  owner root
+  group ssl-cert
+  mode 0640
+  after "systemctl start nginx"
+}
+```
+
+- Every named host must be defined by a top-level `host` block.
+- `before` and `after` hooks of a target with `host` run on the remote host as the ssh login user, not on this machine. `reload` hooks always run locally.
+- Destination paths must be absolute POSIX-style paths (`/...`). `owner` and `group` are resolved on the remote host.
+- In a `group`, a deploy's `host` list is replaced, not merged, by a certificate `deploy` of the same name that sets `host`.
+- Path collision detection is per host: the same path on two different hosts, or on a host and locally, is not a collision.
+
+## `host`
+
+Defines a remote machine that deploy targets can install on over SSH. gibcert runs the system `ssh` binary with strict host key checking and no prompts, and starts `gibcert receive` on the remote host. A `host` block that no deploy references is allowed.
+
+```scfg
+host web1 {
+  address web1.example.net
+  user gibdeploy
+  port 22
+  identity-file /etc/gibcert/deploy_ed25519
+  known-hosts /etc/gibcert/known_hosts
+  timeout 30s
+  remote-command /usr/local/bin/gibcert
+}
+```
+
+| Directive | Description |
+| --- | --- |
+| `address HOST` | Host name or IP address passed to `ssh`. Required. Must not start with `-`. |
+| `user NAME` | Login user on the remote host. |
+| `port PORT` | SSH port. |
+| `identity-file PATH` | SSH private key. Must be an absolute path. |
+| `known-hosts PATH` | `known_hosts` file used to verify the host key. Must be an absolute path. |
+| `timeout DURATION` | SSH connect timeout. Default `30s`. It does not limit the installation itself. |
+| `remote-command PATH` | Command that runs gibcert on the remote host. Default `gibcert` (looked up on the remote `PATH`). May contain only `A-Za-z0-9_./+-`. |
+
+Directives not set fall back to `ssh` defaults, including `~/.ssh/config`. Host key verification is strict and never prompts; add the key to the `known_hosts` file beforehand.
 
 ## `tlsa`
 

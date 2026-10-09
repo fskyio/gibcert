@@ -133,11 +133,31 @@ A failure while reconciling one certificate is reported with its name, and the r
 
 With `--all`, a certificate that has no stored certificate or key yet is reported as skipped rather than failed. A certificate named explicitly in that state fails.
 
-### `gibcert deploy <certificate>`
+### `gibcert deploy [--host NAME] <certificate>`
 
-Deploy stored canonical certificate material for one configured certificate to its configured deploy targets.
+Deploy stored canonical certificate material for one configured certificate to its configured deploy targets, local and remote.
+
+`--host NAME` restricts the deploy to targets installed on that host; local targets and targets of other hosts are skipped. It is an error (status `1`) when the host is unknown or no target of the certificate installs on it.
+
+Remote results are printed as `target@host`, for example `  nginx@web1: updated [fullchain key]` or `  nginx@web1: up to date`. Each remote host is independent: a failure on one host does not stop the others, and all failures are reported at the end with a non-zero exit status. Results of the hosts and targets that succeeded are still reported.
 
 This command does not issue or renew the certificate.
+
+### `gibcert host test [NAME...]`
+
+Check remote deploy hosts. With no names, every configured `host` block is tested; an unknown name is a usage error (status `2`).
+
+For each host, gibcert connects over SSH and prints one line with the result and, on success, the login user, address, remote gibcert version, and uid. It then does a dry-run installation of every deploy target that installs on that host, using the stored material of the certificate. The dry run stages and discards the files on the host, exercising directory writes, mode, ownership, and reading of existing files. A certificate that has not been issued yet is tested with placeholder material, which checks permissions only.
+
+Each target is reported as `CERT/TARGET: ok` or `CERT/TARGET: FAIL` with the reason. For permission failures gibcert also prints an example setup for an unprivileged deploy user and a pointer to [Remote deploy](remote-deploy.md).
+
+The command never installs files and never runs hooks. Exit status is `0` only if every host and target is ok, otherwise `1`.
+
+### `gibcert receive`
+
+Internal. Runs the receiving side of remote deployment on the remote host and is started by `gibcert deploy`, `apply`, and `renew` over SSH. It is not listed in help output and is not meant to be run by hand.
+
+It takes no arguments or flags and reads no configuration. It reads one JSON request on standard input, installs the files, and writes one JSON response on standard output. See [Remote deploy](remote-deploy.md#gibcert-receive-internal).
 
 ### `gibcert revoke [--reason REASON] [--reissue] [--yes] <certificate>`
 

@@ -1,5 +1,9 @@
 # Deploy Hook Examples
 
+gibcert can also install certificates on other machines natively over SSH; see
+`docs/remote-deploy.md`. The scripts here remain useful for targets that cannot
+run gibcert.
+
 This directory contains example deploy hooks for copying certificate material
 after a gibcert deploy target changes. They are meant as starting points:
 read them, adapt them to your environment, and test them before using them with

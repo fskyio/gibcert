@@ -79,3 +79,7 @@ The example service uses systemd directory helpers:
 - `ConfigurationDirectory=gibcert`
 
 It also applies several hardening options. Adjust the service if your deploy hooks need extra permissions, access to paths blocked by hardening, or a different binary location.
+
+## Remote Deploy
+
+Deploy targets with `host` run `ssh` as a child of the service. The `identity-file` and `known-hosts` files must be readable by the user the service runs as, and that user's `HOME` determines which `~/.ssh/config` ssh reads. The shipped unit sets `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, which permits outbound ssh connections. See [Remote deploy](remote-deploy.md).

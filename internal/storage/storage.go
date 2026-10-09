@@ -142,21 +142,22 @@ func (s *Store) LoadAccountMeta(name string) (*AccountMeta, error) {
 }
 
 type CertMeta struct {
-	Name             string           `json:"name"`
-	Account          string           `json:"account"`
-	CA               string           `json:"ca,omitempty"`
-	IssuerType       string           `json:"issuer_type,omitempty"`
-	Directory        string           `json:"directory"`
-	Names            []string         `json:"names"`
-	SerialNumber     string           `json:"serial_number"`
-	NotBefore        time.Time        `json:"not_before"`
-	NotAfter         time.Time        `json:"not_after"`
-	IssuedAt         time.Time        `json:"issued_at"`
-	RevokedAt        *time.Time       `json:"revoked_at,omitempty"`
-	RevocationReason string           `json:"revocation_reason,omitempty"`
-	Deploys          []CertDeployMeta `json:"deploys,omitempty"`
-	TLSA             *CertTLSAMeta    `json:"tlsa,omitempty"`
-	ARI              *CertARI         `json:"ari,omitempty"`
+	Name             string              `json:"name"`
+	Account          string              `json:"account"`
+	CA               string              `json:"ca,omitempty"`
+	IssuerType       string              `json:"issuer_type,omitempty"`
+	Directory        string              `json:"directory"`
+	Names            []string            `json:"names"`
+	SerialNumber     string              `json:"serial_number"`
+	NotBefore        time.Time           `json:"not_before"`
+	NotAfter         time.Time           `json:"not_after"`
+	IssuedAt         time.Time           `json:"issued_at"`
+	RevokedAt        *time.Time          `json:"revoked_at,omitempty"`
+	RevocationReason string              `json:"revocation_reason,omitempty"`
+	Deploys          []CertDeployMeta    `json:"deploys,omitempty"`
+	DeployFailures   []CertDeployFailure `json:"deploy_failures,omitempty"`
+	TLSA             *CertTLSAMeta       `json:"tlsa,omitempty"`
+	ARI              *CertARI            `json:"ari,omitempty"`
 }
 
 // CertARI is the cached ACME Renewal Information (RFC 9773) for a certificate.
@@ -175,11 +176,26 @@ type CertARI struct {
 }
 
 type CertDeployMeta struct {
-	Target string    `json:"target"`
+	Target string `json:"target"`
+	// Host names the remote host the material was installed on. Empty means
+	// this machine.
+	Host   string    `json:"host,omitempty"`
 	Kind   string    `json:"kind"`
 	Path   string    `json:"path"`
 	SHA256 string    `json:"sha256"`
 	At     time.Time `json:"at"`
+}
+
+// CertDeployFailure records that the latest deploy attempt of a target on a
+// remote host failed, so status can report it until a later attempt succeeds.
+// Since is the time of the first failure in the current streak and At the time
+// of the latest attempt.
+type CertDeployFailure struct {
+	Target string    `json:"target"`
+	Host   string    `json:"host"`
+	Since  time.Time `json:"since"`
+	At     time.Time `json:"at"`
+	Error  string    `json:"error"`
 }
 
 type CertTLSAMeta struct {

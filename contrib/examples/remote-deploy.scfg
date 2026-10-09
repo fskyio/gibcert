@@ -1,0 +1,78 @@
+# Deploy certificates to other machines over SSH.
+#
+# A `host` block describes a remote machine. A `deploy` block that lists
+# `host` names installs on those machines instead of the local one, by running
+# `gibcert receive` there over ssh. Host key checking is strict and never
+# prompts: add each host to the known-hosts file first.
+#
+# Run `gibcert host test` after editing to check connectivity and permissions.
+# See docs/remote-deploy.md.
+#
+# `before`/`after` hooks of a remote deploy run on the remote host as the ssh
+# login user. `reload` hooks always run locally.
+
+account letsencrypt {
+	ca letsencrypt
+	email admin@example.com
+}
+
+host web1 {
+	address web1.example.net
+	user gibdeploy
+	port 22
+	identity-file /etc/gibcert/deploy_ed25519
+	known-hosts /etc/gibcert/known_hosts
+	timeout 30s
+	remote-command /usr/local/bin/gibcert
+}
+
+host web2 {
+	address web2.example.net
+	user gibdeploy
+	identity-file /etc/gibcert/deploy_ed25519
+	known-hosts /etc/gibcert/known_hosts
+}
+
+certificate example.com {
+	account letsencrypt
+	names example.com www.example.com
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	# Installed on web1 and web2 only, not on this machine.
+	deploy nginx {
+		host web1 web2
+		fullchain /etc/nginx/tls/example.com/fullchain.pem
+		key /etc/nginx/tls/example.com/privkey.pem
+		owner root
+		group ssl-cert
+		mode 0640
+		after "sudo -n systemctl reload nginx"
+	}
+}
+
+# A group whose deploy targets the same hosts. Paths are templated per
+# certificate; collisions are checked per host.
+group mail {
+	account letsencrypt
+
+	challenge http-01 {
+		webroot /var/www/acme-challenge
+	}
+
+	deploy prosody {
+		host web1
+		fullchain /etc/prosody/certs/gibcert/{cert}/fullchain.pem
+		key /etc/prosody/certs/gibcert/{cert}/privkey.pem
+		group prosody
+		mode 0640
+		after "sudo -n systemctl reload prosody"
+	}
+}
+
+certificate xmpp.example.com {
+	groups mail
+	names xmpp.example.com
+}

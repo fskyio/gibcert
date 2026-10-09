@@ -407,6 +407,7 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	}
 	if existing, err := store.LoadCertMeta(cert.Name); err == nil {
 		meta.Deploys = existing.Deploys
+		meta.DeployFailures = existing.DeployFailures
 		meta.TLSA = existing.TLSA
 	}
 

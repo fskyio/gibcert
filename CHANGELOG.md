@@ -14,6 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tlsa reconcile` accepts several certificate names or `--all` to reconcile
   every certificate with a `tlsa` block in one run, continuing past individual
   failures and reporting a summary.
+- Native remote deployment over SSH. A `deploy` block can list `host` names, and
+  top-level `host` blocks define the machines. gibcert runs `gibcert receive`
+  on each host through the system `ssh` binary with strict host key checking.
+  `before`/`after` hooks of such a target run on the remote host; `reload`
+  hooks stay local. See `docs/remote-deploy.md`.
+- `gibcert host test [NAME...]` checks connectivity and does a dry-run
+  installation of every deploy target on each host, with setup hints for
+  permission failures.
+- `gibcert receive`, an internal command run over ssh on the remote host.
+- `gibcert deploy --host NAME` restricts a deploy to targets installed on that
+  host.
+- `plan`, `apply`, and `status` report remote targets per host
+  (`deploy CERT/TARGET@HOST`), and `status` does not check them against the
+  local filesystem.
+- Failed deploys on a remote host are recorded per target and host, shown by
+  `status`, and cleared by a later success. Other hosts are still attempted, and
+  only unfinished hosts are retried by the next `renew` or `apply`.
 
 ### Changed
 - `plan`, `apply`, and `renew` reconcile TLSA records for current certificates
@@ -22,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renewal. Records left under owners that are no longer configured are removed.
 
 ### Fixed
+- Deploys skip a chown that would not change the owner or group, so a user that
+  already owns files through a setgid directory can deploy without privileges.
 - Publish TLSA records for local CA certificates and rotate them to the
   pre-published next key on renewal; signing previously skipped TLSA and
   dropped its metadata.
