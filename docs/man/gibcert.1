@@ -45,8 +45,9 @@ Show what apply would change.
 .TP
 .B apply [\fB\-\-yes\fR]
 Reconcile state and deployed files with the config. Prints a plan, confirms
-externally visible ACME actions unless \fB\-\-yes\fR is set, issues or renews
-due certificates, then deploys configured material. On a nonempty plan, a
+externally visible ACME and TLSA actions unless \fB\-\-yes\fR is set, issues or
+renews due certificates, reconciles TLSA records whose published owners differ
+from the config, then deploys configured material. On a nonempty plan, a
 failed renewal does not prevent unrelated certificates from being processed.
 Only deploy targets with changed file content are reported; unchanged targets
 are reconciled without a status line.
@@ -70,6 +71,9 @@ Otherwise-current certificates still reconcile missing or drifted deployment
 files, attributes, and pending success hooks from canonical material without
 reissuance or ACME jitter. Metadata and drift rules match deploy. Content changes
 trigger coalesced reloads; unchanged targets do not reload.
+Otherwise-current certificates with a tlsa block also republish TLSA records
+when the published owners differ from the configured names and ports, or when
+no records were published yet.
 .TP
 .B account rotate-key \fIACCOUNT\fR
 Rotate an existing ACME account key using ACME account key rollover. The
@@ -105,7 +109,10 @@ require policy=wildcard.
 Reconcile DANE TLSA records for one configured certificate using stored
 canonical certificate material. This does not issue, renew, or deploy the
 certificate; it republishes current and staged next-key TLSA records, removes
-stale records known from metadata, and refreshes TLSA metadata.
+stale records known from metadata, and refreshes TLSA metadata. Apply and renew
+run this automatically when published owners differ from the configured names
+and ports; use it to apply other tlsa changes, such as ttl or type, before the
+next renewal.
 .TP
 .B deploy \fICERTIFICATE\fR
 Deploy stored canonical material for one configured certificate.

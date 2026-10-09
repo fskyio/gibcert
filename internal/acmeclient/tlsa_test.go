@@ -223,6 +223,92 @@ func TestReconcileTLSANamesOverride(t *testing.T) {
 	}
 }
 
+func TestReconcileTLSAKeepsRecordsUnderDifferentlyCasedOwner(t *testing.T) {
+	store := storage.New(t.TempDir())
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	certFixture := testCertDER(t, "example.com", nil, nil)
+	paths := store.CertPaths("example.com")
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteKey(paths.Key, certFixture.key); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteSingleCertDER(paths.Cert, certFixture.der, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pdns := newTLSATestPowerDNS(t, "topsecret")
+	srv := httptest.NewServer(pdns)
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{Providers: []*config.Provider{{
+		Name:    "powerdns",
+		Type:    "dns",
+		Driver:  "powerdns",
+		Fields:  map[string][]string{"api-url": {srv.URL}, "server-id": {"localhost"}},
+		Secrets: []*config.Secret{{Name: "api-key", Value: "topsecret"}},
+	}}}
+	cert := &config.Certificate{
+		Name:  "example.com",
+		Names: []string{"example.com"},
+		Key:   config.KeySpec{Type: "ecdsa", Curve: "p256"},
+		TLSA: &config.TLSASpec{
+			Provider:     "powerdns",
+			Ports:        []config.TLSAPort{{Port: 25, Protocol: "tcp"}},
+			Names:        []string{"Mail.Example.com"},
+			TTL:          60,
+			Usage:        3,
+			Selector:     1,
+			MatchingType: 1,
+		},
+	}
+	cfg.Certificates = []*config.Certificate{cert}
+	run := func() {
+		t.Helper()
+		if err := ReconcileTLSA(context.Background(), store, cfg, cert, TLSAReconcileOptions{Out: io.Discard}); err != nil {
+			t.Fatalf("ReconcileTLSA: %v", err)
+		}
+	}
+
+	run()
+	if got := len(pdns.records["_25._tcp.mail.example.com.|TLSA"]); got != 2 {
+		t.Fatalf("records under lowercased owner got %d, want 2", got)
+	}
+
+	// Metadata written before owners were lowercased can hold any case. The
+	// same records must be kept, not removed as stale after republishing.
+	meta, err := store.LoadCertMeta(cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range meta.TLSA.Published {
+		meta.TLSA.Published[i].Owner = strings.ToUpper(meta.TLSA.Published[i].Owner)
+	}
+	if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
+		t.Fatal(err)
+	}
+	pdns.changes = nil
+	run()
+	for _, change := range pdns.changes {
+		if !strings.HasSuffix(change, " _25._tcp.mail.example.com.") || strings.HasPrefix(change, "DELETE") {
+			t.Fatalf("unexpected DNS change %q after republishing under differently cased owner", change)
+		}
+	}
+	if got := len(pdns.records["_25._tcp.mail.example.com.|TLSA"]); got != 2 {
+		t.Fatalf("records after republish got %d, want 2", got)
+	}
+	meta, err = store.LoadCertMeta(cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range meta.TLSA.Published {
+		if rec.Owner != "_25._tcp.mail.example.com." {
+			t.Fatalf("published owner got %q, want lowercased owner", rec.Owner)
+		}
+	}
+}
+
 func TestTLSAHelperBranches(t *testing.T) {
 	meta := storage.CertMeta{}
 	fillTLSAMetaDefaults(&meta, storage.CertMeta{
@@ -345,6 +431,7 @@ type tlsaTestPowerDNS struct {
 	t       *testing.T
 	apiKey  string
 	records map[string][]tlsaTestPowerDNSRecord
+	changes []string // "CHANGETYPE owner" per patched RRset
 }
 
 func newTLSATestPowerDNS(t *testing.T, apiKey string) *tlsaTestPowerDNS {
@@ -394,6 +481,7 @@ func (p *tlsaTestPowerDNS) serveZone(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, rrset := range body.RRsets {
 			key := rrset.Name + "|" + rrset.Type
+			p.changes = append(p.changes, rrset.ChangeType+" "+rrset.Name)
 			switch rrset.ChangeType {
 			case "REPLACE":
 				p.records[key] = rrset.Records

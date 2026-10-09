@@ -204,6 +204,43 @@ certificate example.com {
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate accepted an IP address as a tlsa name")
 	}
+
+	wildcard := strings.Replace(src, "names mail.example.com smtp.example.com", "names *.example.com", 1)
+	cfg, err = Read(strings.NewReader(wildcard))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wildcard") {
+		t.Errorf("Validate of wildcard tlsa name got %v, want wildcard rejection", err)
+	}
+}
+
+func TestCertificateTLSAOwners(t *testing.T) {
+	cert := &Certificate{
+		Names: []string{"*.example.com", "Example.com"},
+		TLSA: &TLSASpec{Ports: []TLSAPort{
+			{Port: 25, Protocol: "tcp"},
+			{Port: 853, Protocol: "UDP"},
+		}},
+	}
+	// Certificate names: the wildcard and differently cased apex collapse to
+	// one owner per port.
+	if got, want := cert.TLSAOwners(), []string{"_25._tcp.example.com.", "_853._udp.example.com."}; !equalSlices(got, want) {
+		t.Errorf("default owners: got %v, want %v", got, want)
+	}
+
+	cert.TLSA.Names = []string{"MX1.example.com.", "mx2.example.com", "mx1.example.com"}
+	want := []string{
+		"_25._tcp.mx1.example.com.", "_853._udp.mx1.example.com.",
+		"_25._tcp.mx2.example.com.", "_853._udp.mx2.example.com.",
+	}
+	if got := cert.TLSAOwners(); !equalSlices(got, want) {
+		t.Errorf("configured owners: got %v, want %v", got, want)
+	}
+
+	if got := (&Certificate{Names: []string{"example.com"}}).TLSAOwners(); got != nil {
+		t.Errorf("owners without tlsa block: got %v, want nil", got)
+	}
 }
 
 func TestLoadIncludesDirectory(t *testing.T) {

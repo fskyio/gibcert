@@ -107,6 +107,12 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, err
 			if cert.TLSA != nil {
 				p.Actions = append(p.Actions, tlsaAction(cert, store))
 			}
+		} else if reason := renew.TLSAReconcileReason(cert, store); reason != "" {
+			p.Actions = append(p.Actions, Action{
+				Subject: "tlsa " + cert.Name,
+				Verb:    "reconcile",
+				Detail:  reason,
+			})
 		}
 
 		actions, err := deployActions(cert, store, certWillChange)

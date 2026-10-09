@@ -367,3 +367,81 @@ func TestShouldRenewIssuerIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestTLSAReconcileReason(t *testing.T) {
+	store := storage.New(t.TempDir())
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	metaPath := store.CertPaths("example.com").Meta
+	if err := os.MkdirAll(store.CertPaths("example.com").Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	published := func(owners ...string) *storage.CertMeta {
+		meta := &storage.CertMeta{Name: "example.com", TLSA: &storage.CertTLSAMeta{}}
+		for _, owner := range owners {
+			meta.TLSA.Published = append(meta.TLSA.Published,
+				storage.TLSARecord{Owner: owner, RData: "3 1 1 aa"},
+				storage.TLSARecord{Owner: owner, RData: "3 1 1 bb"})
+		}
+		return meta
+	}
+	const (
+		notPublished = "TLSA records not published"
+		drift        = "published TLSA owners differ from configuration"
+	)
+	smtp := []config.TLSAPort{{Port: 25, Protocol: "tcp"}}
+	tests := []struct {
+		name  string
+		names []string
+		ports []config.TLSAPort
+		meta  *storage.CertMeta
+		raw   string
+		want  string
+	}{
+		{name: "missing metadata", want: notPublished},
+		{name: "metadata without tlsa", meta: &storage.CertMeta{Name: "example.com"}, want: notPublished},
+		{name: "unreadable metadata", raw: "{", want: "certificate metadata unreadable"},
+		{name: "default owners current", meta: published("_25._tcp.example.com.", "_25._tcp.www.example.com.")},
+		{name: "owner case ignored", meta: published("_25._TCP.Example.COM.", "_25._tcp.WWW.example.com.")},
+		{name: "names changed", names: []string{"mail.example.com"},
+			meta: published("_25._tcp.example.com.", "_25._tcp.www.example.com."), want: drift},
+		{name: "names current", names: []string{"mail.example.com"}, meta: published("_25._tcp.mail.example.com.")},
+		{name: "stale owner retained", names: []string{"mail.example.com"},
+			meta: published("_25._tcp.mail.example.com.", "_25._tcp.example.com."), want: drift},
+		{name: "port added", ports: append(smtp, config.TLSAPort{Port: 465, Protocol: "tcp"}),
+			meta: published("_25._tcp.example.com.", "_25._tcp.www.example.com."), want: drift},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if tc.meta != nil {
+				if err := store.SaveCertMeta("example.com", *tc.meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.raw != "" {
+				if err := os.WriteFile(metaPath, []byte(tc.raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ports := tc.ports
+			if ports == nil {
+				ports = smtp
+			}
+			cert := &config.Certificate{
+				Name:  "example.com",
+				Names: []string{"example.com", "www.example.com"},
+				TLSA:  &config.TLSASpec{Ports: ports, Names: tc.names},
+			}
+			if got := TLSAReconcileReason(cert, store); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := TLSAReconcileReason(&config.Certificate{Name: "example.com"}, store); got != "" {
+		t.Fatalf("certificate without tlsa block got %q", got)
+	}
+}

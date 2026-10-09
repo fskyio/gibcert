@@ -21,7 +21,6 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"fmt"
-	"strings"
 )
 
 // TLSARData returns the presentation-format rdata for a TLSA record, e.g.
@@ -29,13 +28,6 @@ import (
 // matching type.
 func TLSARData(usage, selector, matchingType int, data []byte) string {
 	return fmt.Sprintf("%d %d %d %x", usage, selector, matchingType, data)
-}
-
-// TLSAOwner returns the DNS owner name for a TLSA record, with trailing dot.
-// example: TLSAOwner(443, "tcp", "example.com") -> "_443._tcp.example.com."
-func TLSAOwner(port int, protocol, name string) string {
-	name = strings.TrimSuffix(name, ".")
-	return fmt.Sprintf("_%d._%s.%s.", port, strings.ToLower(protocol), name)
 }
 
 // SPKIHash returns the hash of the SubjectPublicKeyInfo for the given public

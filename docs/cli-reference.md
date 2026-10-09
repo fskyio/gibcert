@@ -42,13 +42,14 @@ Show what `apply` would change. The plan can include:
 - Certificate issuance, renewal, signing, or resigning.
 - Deploy file creation, update, mode change, owner change, or group change.
 - Deploy hooks that would run.
+- TLSA record reconciliation when the published owners differ from the configured `tlsa` names and ports, or a current certificate has no published records yet.
 - Orphan certificate state that exists locally but is no longer configured.
 
 ### `gibcert apply [--yes]`
 
 Reconcile local state and deployed files with the config.
 
-`apply` computes and prints a plan, asks for confirmation when ACME account or certificate actions are required, issues or renews due certificates, then deploys all configured certificate material.
+`apply` computes and prints a plan, asks for confirmation when ACME account, certificate, or TLSA record actions are required, issues or renews due certificates, reconciles TLSA records whose published owners differ from the configuration, then deploys all configured certificate material.
 
 When a plan is nonempty, `apply` still reconciles every configured certificate; a failed renewal does not prevent unrelated certificates from being processed. It reports deploy targets only when their file content changed; unchanged targets are not listed.
 
@@ -73,6 +74,8 @@ Renew due certificates and reconcile all configured deploy targets.
 A certificate is due when it is missing, unreadable, expired, inside its renewal window, has different configured SANs, or has a known issuer identity no longer accepted by the configuration. A configured local CA that is not ready also makes it due. `plan`, `apply`, `renew`, `list`, and `show` share this decision. SAN comparison ignores order, DNS case, and equivalent IP spellings but treats wildcards exactly. Issuer comparison includes account, CA, issuer type, and ACME directory; a still-configured failover issuer is accepted. Imported certificates and incomplete legacy metadata do not establish issuer ownership. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
 
 Deployment reconciliation also runs for otherwise-current certificates: missing or drifted files and pending per-target success hooks are retried from valid canonical material without reissuance or ACME jitter. The existing metadata, mode, and ownership rules apply. Content changes trigger the usual coalesced reloads; an unchanged target does not reload.
+
+TLSA reconciliation likewise runs for otherwise-current certificates with a `tlsa` block when the published owners differ from the configured `names` and ports, or when no records were published yet. Records are republished from canonical material and records under owners that are no longer configured are removed; key rotation still waits for renewal.
 
 | Flag | Description |
 | --- | --- |
@@ -116,7 +119,7 @@ Look up the `_validation-persist.<domain>` TXT record for each name in the certi
 
 Reconcile DANE TLSA records for one configured certificate using stored canonical certificate material.
 
-This command does not issue, renew, or deploy the certificate. It reads the stored `cert.pem` and `privkey.pem`, ensures the current and staged next-key TLSA records are published, removes stale records known from gibcert metadata, and writes refreshed TLSA metadata. It is useful after a DNS provider or network failure interrupted TLSA publishing after certificate material had already been stored.
+This command does not issue, renew, or deploy the certificate. It reads the stored `cert.pem` and `privkey.pem`, ensures the current and staged next-key TLSA records are published, removes stale records known from gibcert metadata, and writes refreshed TLSA metadata. It is useful after a DNS provider or network failure interrupted TLSA publishing after certificate material had already been stored, and to apply `tlsa` changes such as `ttl` or `type` before the next renewal. `apply` and `renew` run the same reconciliation automatically when the published owners differ from the configured `names` and ports.
 
 ### `gibcert deploy <certificate>`
 

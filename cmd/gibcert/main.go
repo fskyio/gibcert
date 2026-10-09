@@ -766,11 +766,6 @@ func cmdTLSAReconcile(cfg *config.Config, store *storage.Store, args []string) i
 		logError(err)
 		return 1
 	}
-	meta, err := tlsaMetaDefaults(cfg, cert)
-	if err != nil {
-		logError(err)
-		return 1
-	}
 	lk, err := lock.Acquire(store.LockPath(), 5*time.Second)
 	if err != nil {
 		logError(err)
@@ -780,14 +775,24 @@ func cmdTLSAReconcile(cfg *config.Config, store *storage.Store, args []string) i
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := acmeclient.ReconcileTLSA(ctx, store, cfg, cert, acmeclient.TLSAReconcileOptions{
-		Out:  os.Stdout,
-		Meta: meta,
-	}); err != nil {
+	if err := reconcileConfiguredTLSA(ctx, store, cfg, cert, os.Stdout); err != nil {
 		logError(err)
 		return 1
 	}
 	return 0
+}
+
+// reconcileConfiguredTLSA republishes cert's TLSA records from its stored
+// material and removes records left under owners that are no longer configured.
+func reconcileConfiguredTLSA(ctx context.Context, store *storage.Store, cfg *config.Config, cert *config.Certificate, out io.Writer) error {
+	meta, err := tlsaMetaDefaults(cfg, cert)
+	if err != nil {
+		return err
+	}
+	return acmeclient.ReconcileTLSA(ctx, store, cfg, cert, acmeclient.TLSAReconcileOptions{
+		Out:  out,
+		Meta: meta,
+	})
 }
 
 func tlsaMetaDefaults(cfg *config.Config, cert *config.Certificate) (storage.CertMeta, error) {
@@ -1068,6 +1073,13 @@ func cmdApply(p *paths.Paths, args []string) int {
 				failed = true
 				continue
 			}
+		} else if reason := renew.TLSAReconcileReason(cert, store); reason != "" {
+			if err := reconcileConfiguredTLSA(ctx, store, cfg, cert, os.Stdout); err != nil {
+				logError(fmt.Errorf("%s: tlsa reconcile: %w", cert.Name, err))
+				outcomes[cert.Name] = runFailed
+				failed = true
+				continue
+			}
 		}
 		results, err := deploy.Deploy(cert, store, os.Stdout)
 		if err != nil {
@@ -1177,6 +1189,9 @@ func planNeedsConfirmation(pl plan.Plan) bool {
 			return true
 		}
 		if strings.HasPrefix(a.Subject, "certificate ") && (a.Verb == "issue" || a.Verb == "renew") {
+			return true
+		}
+		if strings.HasPrefix(a.Subject, "tlsa ") {
 			return true
 		}
 	}
@@ -1324,7 +1339,7 @@ func cmdRenew(p *paths.Paths, args []string) int {
 	now := time.Now()
 	for _, cert := range order {
 		d := renew.ShouldRenew(cfg, cert, store, now)
-		if d.Due || len(cert.Deploys) != 0 {
+		if d.Due || len(cert.Deploys) != 0 || renew.TLSAReconcileReason(cert, store) != "" {
 			work = append(work, renewalWork{cert: cert, due: d.Due})
 		}
 		if verbose && !d.Due {
@@ -1416,8 +1431,25 @@ func cmdRenew(p *paths.Paths, args []string) int {
 				continue
 			}
 			cancel()
-		} else if verbose && item.due {
-			fmt.Printf("%s: no longer due; reconciling deployment\n", cert.Name)
+		} else {
+			if verbose && item.due {
+				fmt.Printf("%s: no longer due; reconciling deployment\n", cert.Name)
+			}
+			if reason := renew.TLSAReconcileReason(cert, store); reason != "" {
+				if verbose {
+					fmt.Printf("%s: reconciling TLSA (%s)\n", cert.Name, reason)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				err := reconcileConfiguredTLSA(ctx, store, cfg, cert, out)
+				cancel()
+				if err != nil {
+					errs = append(errs, fmt.Errorf("%s: tlsa reconcile: %w", cert.Name, err))
+					logError(errs[len(errs)-1])
+					outcomes[cert.Name] = runFailed
+					releaseLock(lk)
+					continue
+				}
+			}
 		}
 
 		results, err := deploy.Deploy(cert, store, out)
@@ -1491,10 +1523,7 @@ func issueConfiguredCert(ctx context.Context, store *storage.Store, cfg *config.
 	if ca, ok, err := config.LocalCAForCertificate(cfg, cert); err != nil {
 		return err
 	} else if ok {
-		return localca.Issue(cert, ca, store, localca.IssueOptions{
-			Out:    opts.Out,
-			NewKey: opts.NewKey,
-		})
+		return issueLocalCert(ctx, store, cfg, cert, ca, opts)
 	}
 	issuers, err := config.ACMEIssuersForCertificate(cfg, cert)
 	if err != nil {
@@ -1514,6 +1543,33 @@ func issueConfiguredCert(ctx context.Context, store *storage.Store, cfg *config.
 		}
 		return acmeclient.Issue(ctx, client, cert, store, cfg, o)
 	})
+}
+
+// issueLocalCert signs cert from its local CA. TLSA-managed certificates get
+// the same staged-key rotation and record publication as ACME issuance.
+func issueLocalCert(ctx context.Context, store *storage.Store, cfg *config.Config, cert *config.Certificate, ca *config.CA, opts acmeclient.IssueOptions) error {
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	lopts := localca.IssueOptions{Out: out, NewKey: opts.NewKey}
+	if cert.TLSA != nil {
+		d, err := acmeclient.SelectTLSAKey(cert, store, opts.NewKey, out, time.Now())
+		if err != nil {
+			return err
+		}
+		lopts.Key, lopts.ReusedKey, lopts.StagedKey = d.Key, d.ReusedKey, d.StagedKey
+	}
+	if err := localca.Issue(cert, ca, store, lopts); err != nil {
+		return err
+	}
+	if cert.TLSA == nil {
+		return nil
+	}
+	if err := reconcileConfiguredTLSA(ctx, store, cfg, cert, out); err != nil {
+		return fmt.Errorf("tlsa reconcile: %w", err)
+	}
+	return nil
 }
 
 // issueWithFailover tries each issuer in order, stopping at the first success.

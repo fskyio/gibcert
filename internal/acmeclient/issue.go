@@ -76,27 +76,12 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	var err error
 	reusedKey := false
 	stagedRotation := false
-	if cert.TLSA != nil && opts.NewKey {
-		fmt.Fprintf(out, "%s: warning: --new-key forces a fresh key without the TLSA pre-publish wait; DANE clients with cached records may fail until TTL expires\n", cert.Name)
-	}
-	if cert.TLSA != nil && !opts.NewKey {
-		d, err := pickTLSAKey(cert, store, time.Now())
+	if cert.TLSA != nil {
+		d, err := SelectTLSAKey(cert, store, opts.NewKey, out, time.Now())
 		if err != nil {
 			return err
 		}
-		certKey = d.Key
-		reusedKey = d.ReusedKey
-		stagedRotation = d.StagedKey
-		switch {
-		case d.StagedKey:
-			fmt.Fprintf(out, "%s: rotating to pre-published next key\n", cert.Name)
-		case d.NextNotYet:
-			fmt.Fprintf(out, "%s: next-key TLSA not yet matured, reusing current key this cycle\n", cert.Name)
-		case d.NextMissing && d.ReusedKey:
-			fmt.Fprintf(out, "%s: no staged next key, reusing current key (will pre-publish a new next key)\n", cert.Name)
-		case d.Bootstrap:
-			fmt.Fprintf(out, "%s: TLSA bootstrap (no prior key)\n", cert.Name)
-		}
+		certKey, reusedKey, stagedRotation = d.Key, d.ReusedKey, d.StagedKey
 	}
 	if certKey == nil && cert.Key.Reuse && !opts.NewKey {
 		certKey, err = storage.ReadKey(store.CertPaths(cert.Name).Key)
