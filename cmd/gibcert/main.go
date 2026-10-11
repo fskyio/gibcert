@@ -42,7 +42,6 @@ import (
 	"gitfield.org/fsky/gibcert/internal/plan"
 	"gitfield.org/fsky/gibcert/internal/preflight"
 	"gitfield.org/fsky/gibcert/internal/receive"
-	"gitfield.org/fsky/gibcert/internal/remote"
 	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
@@ -1041,7 +1040,7 @@ func cmdPlan(p *paths.Paths, args []string) int {
 	}
 	defer lk.Release()
 
-	pl, err := plan.Compute(cfg, store, time.Now(), &remote.Client{})
+	pl, err := plan.Compute(cfg, store, time.Now())
 	if err != nil {
 		logError(err)
 		return 1
@@ -1096,7 +1095,7 @@ func cmdApply(p *paths.Paths, args []string) int {
 	}
 	defer lk.Release()
 
-	pl, err := plan.Compute(cfg, store, time.Now(), &remote.Client{})
+	pl, err := plan.Compute(cfg, store, time.Now())
 	if err != nil {
 		logError(err)
 		return 1
@@ -1174,9 +1173,14 @@ func cmdApply(p *paths.Paths, args []string) int {
 		} else if reason := renew.TLSAReconcileReason(cert, store); reason != "" {
 			if err := reconcileConfiguredTLSA(ctx, store, cfg, cert, os.Stdout); err != nil {
 				logError(fmt.Errorf("%s: tlsa reconcile: %w", cert.Name, err))
-				outcomes[cert.Name] = runFailed
 				failed = true
-				continue
+				// The stored material stays deployable unless its key is
+				// known to lack a published TLSA record.
+				if renew.StoredKeyTLSAUnpublished(cert, store) {
+					logErrorMessage(cert.Name + ": " + tlsaUnpublishedDeploySkip)
+					outcomes[cert.Name] = runFailed
+					continue
+				}
 			}
 		}
 		results, err := deploy.Deploy(cert, store, os.Stdout, deployOptions(cfg)...)
@@ -1213,10 +1217,11 @@ const (
 
 // gateReason reports why cert must be skipped given the outcomes of
 // already-processed certificates, or "" if it may proceed. A certificate is
-// gated when any certificate it requires failed or was itself skipped. Because
-// runs process certificates in dependency order, a required certificate always
-// has an outcome recorded by the time its dependents are reached; an absent
-// entry means the requirement was already satisfied (up to date or not due).
+// gated when any certificate it requires failed or was itself skipped. Runs
+// process certificates in dependency order; an absent entry means the
+// requirement was satisfied (up to date or not due). renew records no failure
+// for a certificate that was not due, so a deploy or TLSA reconcile failure of
+// an already valid certificate never gates its dependents.
 func gateReason(cert *config.Certificate, outcomes map[string]runOutcome) string {
 	for _, dep := range cert.Requires {
 		switch outcomes[dep] {
@@ -1228,6 +1233,8 @@ func gateReason(cert *config.Certificate, outcomes map[string]runOutcome) string
 	}
 	return ""
 }
+
+const tlsaUnpublishedDeploySkip = "deploy skipped: the stored key has no published TLSA record; it is deployed once TLSA publication succeeds"
 
 // reloadQueue collects once-per-run reload commands while a reconcile runs and
 // flushes each distinct command a single time at the end. A command is enqueued
@@ -1499,6 +1506,9 @@ func cmdRenew(p *paths.Paths, args []string) int {
 		lk, err = lock.Acquire(store.LockPath(), 5*time.Second)
 		if err != nil {
 			logError(err)
+			// Certificates deployed earlier in this run still need their
+			// reloads.
+			reloads.flush(verbose)
 			return 1
 		}
 
@@ -1539,9 +1549,13 @@ func cmdRenew(p *paths.Paths, args []string) int {
 				if err != nil {
 					errs = append(errs, fmt.Errorf("%s: tlsa reconcile: %w", cert.Name, err))
 					logError(errs[len(errs)-1])
-					outcomes[cert.Name] = runFailed
-					releaseLock(lk)
-					continue
+					// The stored material stays deployable unless its key
+					// is known to lack a published TLSA record.
+					if renew.StoredKeyTLSAUnpublished(cert, store) {
+						logErrorMessage(cert.Name + ": " + tlsaUnpublishedDeploySkip)
+						releaseLock(lk)
+						continue
+					}
 				}
 			}
 		}
@@ -1554,7 +1568,11 @@ func cmdRenew(p *paths.Paths, args []string) int {
 			}
 			errs = append(errs, fmt.Errorf("%s: deploy: %w", cert.Name, withRemoteHint(err)))
 			logError(errs[len(errs)-1])
-			outcomes[cert.Name] = runFailed
+			// Only a certificate issued this run can fail its dependents; a
+			// valid certificate whose deploy failed still satisfies them.
+			if decision.Due {
+				outcomes[cert.Name] = runFailed
+			}
 			releaseLock(lk)
 			continue
 		}
@@ -2738,7 +2756,7 @@ func cmdDeploy(p *paths.Paths, args []string) int {
 		logError(err)
 		return 1
 	}
-	opts := deployOptions(cfg)
+	opts := append(deployOptions(cfg), deploy.RecheckRemote())
 	if hostName != "" {
 		if cfg.FindHost(hostName) == nil {
 			logError(fmt.Errorf("unknown host %q", hostName))

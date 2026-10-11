@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/deploy"
@@ -131,7 +132,7 @@ func hostTest(cfg *config.Config, store *storage.Store, hosts []*config.Host, cl
 				label := cert.Name + "/" + d.Name
 				req, err := hostTestRequest(cert.Name, d, material)
 				if err == nil {
-					_, err = client.Apply(h, req, true, out)
+					_, err = client.Check(h, req, out)
 				}
 				if err != nil {
 					allOK = false
@@ -218,19 +219,38 @@ func printPermissionHint(out io.Writer, h *config.Host, hello *receive.Hello, d 
 	if user == "" {
 		user = hello.User
 	}
+	if user == "" {
+		user = "USER"
+	}
 	fmt.Fprintf(out, "    hint: an unprivileged deploy user needs write access to the destination.\n")
 	fmt.Fprintf(out, "    Example setup, run as root on %s (adjust names):\n", h.Name)
 	for _, dir := range sorted {
 		if d.Group != "" {
-			fmt.Fprintf(out, "      install -d -o root -g %s -m 2750 %s\n", d.Group, dir)
+			fmt.Fprintf(out, "      install -d -o root -g %s -m 2750 %s\n", shellQuote(d.Group), shellQuote(dir))
 		} else {
-			fmt.Fprintf(out, "      install -d -o root -m 0755 %s\n", dir)
+			fmt.Fprintf(out, "      install -d -o root -m 0755 %s\n", shellQuote(dir))
 		}
-		fmt.Fprintf(out, "      setfacl -m u:%s:rwx %s\n", user, dir)
+		fmt.Fprintf(out, "      setfacl -m %s %s\n", shellQuote("u:"+user+":rwx"), shellQuote(dir))
 	}
 	if d.Group != "" {
 		fmt.Fprintf(out, "    with \"mode 0640\" in the deploy block; see docs/remote-deploy.md\n")
 	} else {
 		fmt.Fprintf(out, "    see docs/remote-deploy.md\n")
 	}
+}
+
+// shellQuote returns s as one POSIX shell word, quoting it unless it consists
+// only of characters that are never special.
+func shellQuote(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("@%+=:,./_-", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

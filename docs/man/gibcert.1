@@ -41,16 +41,22 @@ Print build version information.
 Parse and validate the config, then run preflight checks.
 .TP
 .B plan
-Show what apply would change.
+Show what apply would change. Works offline and does not connect to remote
+hosts: remote targets are planned from deploy records, as a retry after a
+failed attempt, an update with hook lines when content is owed, or an update
+(chmod, chown, chgrp) without hook lines for attribute\-only changes. Files
+changed on a remote host outside gibcert are not detected; use deploy.
 .TP
 .B apply [\fB\-\-yes\fR]
 Reconcile state and deployed files with the config. Prints a plan, confirms
 externally visible ACME and TLSA actions unless \fB\-\-yes\fR is set, issues or
-renews due certificates, reconciles TLSA records whose published owners differ
-from the config, then deploys configured material. On a nonempty plan, a
+renews due certificates, reconciles TLSA records (see renew), then deploys
+configured material. On a nonempty plan, a
 failed renewal does not prevent unrelated certificates from being processed.
 Only deploy targets with changed file content are reported; unchanged targets
-are reconciled without a status line.
+are reconciled without a status line. A failed deploy of a required
+certificate skips its dependents. Remote mode, owner, and group changes are
+applied; a remote host is contacted only when something is owed (see renew).
 .TP
 .B issue [\fB\-\-new\-key\fR] \fICERTIFICATE\fR
 Issue one configured certificate. \fB\-\-new\-key\fR forces certificate key
@@ -61,19 +67,36 @@ Renew due certificates and reconcile all configured deploy targets. The default
 ACME renewal jitter is 5m. When before-expiry is unset, the renewal window is one
 third of the current certificate lifetime, capped at 30 days.
 \fB\-\-no\-jitter\fR disables jitter.
-Certificates are also due when configured SANs or known issuer identity differ,
+Certificates are also due when configured names or known issuer identity differ,
 or a configured local CA is not ready. Plan, apply, renew, list, and show share
-this decision. SAN sets ignore order, DNS case, and equivalent IP spellings;
-wildcards must match exactly. Issuer identity includes type, account, CA, and
-ACME directory. Configured failover issuers remain acceptable. Imported and
-incomplete legacy metadata do not establish issuer ownership.
+this decision. Names are compared as sets with those recorded as requested
+for the stored leaf, ignoring order, DNS case, and equivalent IP spellings;
+wildcards must match exactly. The leaf must list every configured name; extra
+SANs added by the CA are ignored. Without a matching issuance record, the
+actual SAN set must equal the configured names. Issuer identity includes type,
+account, CA, and ACME directory. Configured failover issuers remain acceptable.
+Imported and incomplete legacy metadata do not establish issuer ownership.
 Otherwise-current certificates still reconcile missing or drifted deployment
 files, attributes, and pending success hooks from canonical material without
 reissuance or ACME jitter. Metadata and drift rules match deploy. Content changes
 trigger coalesced reloads; unchanged targets do not reload.
 Otherwise-current certificates with a tlsa block also republish TLSA records
 when the published owners differ from the configured names and ports, or when
-no records were published yet.
+no records were published yet, or when no published record covers the stored
+key (stored key TLSA not published). A failed TLSA reconciliation is reported
+(exit status 1) but material is still deployed, unless records were published
+and none covers the stored key.
+A remote host is contacted only when its deploy records show something owed:
+a recorded failure, files not recorded as installed with current content, or a
+changed owner, group, or mode. A host holding the current material is not
+contacted and may be offline. A host with a recorded failure is retried on
+every run until an attempt succeeds; renew exits 1 meanwhile. Remote hook
+output is always printed to stderr with a "HOST: " prefix.
+For requires, a certificate that was not due and only failed its deploy or
+TLSA reconciliation still counts as satisfied; the error is reported and renew
+exits 1. A due certificate that failed issuance or its deploy still holds back
+its dependents. When renew stops early because the state lock could not be
+acquired, it still runs reloads already queued earlier in that run.
 .TP
 .B account rotate-key \fIACCOUNT\fR
 Rotate an existing ACME account key using ACME account key rollover. The
@@ -125,7 +148,8 @@ and remote deploy targets. \fB\-\-host\fR restricts the deploy to targets
 installed on that host; it is an error if the host is unknown or the
 certificate has no target on it. Remote results are printed as target@host.
 A failure on one host does not stop the others; all failures are reported and
-the exit status is non-zero.
+the exit status is non\-zero. Always contacts every selected remote host,
+regardless of deploy records, so it repairs files changed on the host.
 .TP
 .B host test [\fINAME\fR...]
 Check remote deploy hosts (all configured hosts when no name is given; an
@@ -133,8 +157,12 @@ unknown name is a usage error). Connects to each host over ssh, reports the
 login user, address, remote gibcert version and uid, then does a dry-run
 installation of every deploy target on that host using the stored material
 (placeholder material for a certificate that is not issued yet, which checks
-permissions only). Permission failures print an example setup for an
-unprivileged deploy user. Never installs files or runs hooks. Exits 0 only if
+permissions only). The dry run creates no directories, writes no material, and
+runs no hooks; it reads existing destination files and probes permissions by
+creating and removing an empty .gibcert\-probe\-* file in the destination
+directory or its nearest existing parent. The stored material, including the
+private key, is still sent to the host over ssh. Permission failures print an
+example setup for an unprivileged deploy user. Exits 0 only if
 everything is ok, otherwise 1. See
 .IR docs/remote\-deploy.md .
 .TP
@@ -159,12 +187,13 @@ prints a warning.
 .TP
 .B list
 List configured certificates with compact certificate, issuer, renewal, and
-deploy status.
+deploy status. The deploy status is failed when the last attempt on a remote
+host failed.
 .TP
 .B show \fICERTIFICATE\fR
 Show one configured certificate, its status, issuer/account context, renewal
 timing, stored metadata, canonical paths, TLSA state, and deploy targets with
-per-file status.
+per\-file status. A failed remote target shows FAILED since TIME: ERROR.
 .TP
 .B import acme.sh [\fB\-\-dry\-run\fR] [\fB\-\-only\fR \fINAME\fR]... [\fB\-\-name\fR \fINAME\fR] [\fB\-\-force\fR] \fIPATH\fR
 Import certificate material from an acme.sh state directory. The

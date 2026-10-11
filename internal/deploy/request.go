@@ -160,7 +160,9 @@ func (r Request) Validate() error {
 			return fmt.Errorf("duplicate file kind %q", f.Kind)
 		}
 		seenKind[f.Kind] = true
-		if f.Path == "" || strings.ContainsRune(f.Path, 0) || !filepath.IsAbs(f.Path) {
+		// The same rule as config validation: a "/"-rooted path, which on
+		// Windows names the current drive.
+		if !strings.HasPrefix(f.Path, "/") || strings.ContainsRune(f.Path, 0) {
 			return fmt.Errorf("%s: must be an absolute path, got %q", f.Kind, f.Path)
 		}
 		clean := filepath.Clean(f.Path)
@@ -192,6 +194,11 @@ func (r Request) Validate() error {
 // given time. Only destinations that carry material are recorded. An empty
 // host means this machine.
 func (r Request) Records(host string, at time.Time) []storage.CertDeployMeta {
+	var mode *fs.FileMode
+	if r.Mode != nil {
+		m := *r.Mode
+		mode = &m
+	}
 	var records []storage.CertDeployMeta
 	for _, k := range fileKinds {
 		f := r.file(k.name)
@@ -201,6 +208,7 @@ func (r Request) Records(host string, at time.Time) []storage.CertDeployMeta {
 		records = append(records, storage.CertDeployMeta{
 			Target: r.Target, Host: host, Kind: f.Kind, Path: f.Path,
 			SHA256: storage.SHA256Hex(f.Data), At: at,
+			Owner: r.Owner, Group: r.Group, Mode: mode,
 		})
 	}
 	return records
@@ -216,4 +224,56 @@ func UnseenKinds(meta *storage.CertMeta, r Request, host string) []string {
 		}
 	}
 	return kinds
+}
+
+// HostRecord is what the certificate metadata says about a request on a
+// remote host, which gibcert does not inspect before deploying.
+type HostRecord struct {
+	// Unseen lists the kinds not recorded as installed with this content.
+	Unseen []string
+	// Failure is the recorded failure of the latest attempt, if any.
+	Failure *storage.CertDeployFailure
+	// Attrs lists the owner, group, and mode the request sets that differ
+	// from what was recorded, as "KIND chown OWNER", "KIND chgrp GROUP", and
+	// "KIND chmod MODE".
+	Attrs []string
+}
+
+// Current reports whether the records show the request fully installed.
+func (h HostRecord) Current() bool {
+	return len(h.Unseen) == 0 && h.Failure == nil && len(h.Attrs) == 0
+}
+
+// RecordedOnHost summarizes the records of r on the remote host. An attribute
+// the request leaves unset is not compared: the receiver leaves it alone, so
+// whatever was recorded before still holds.
+func RecordedOnHost(meta *storage.CertMeta, r Request, host string) HostRecord {
+	h := HostRecord{Unseen: UnseenKinds(meta, r, host)}
+	if meta == nil {
+		return h
+	}
+	for i := range meta.DeployFailures {
+		if f := &meta.DeployFailures[i]; f.Target == r.Target && f.Host == host {
+			h.Failure = f
+			break
+		}
+	}
+	for _, want := range r.Records(host, time.Time{}) {
+		for _, rec := range meta.Deploys {
+			if rec.Target != want.Target || rec.Host != want.Host || rec.Kind != want.Kind || rec.Path != want.Path {
+				continue
+			}
+			if r.Owner != "" && rec.Owner != r.Owner {
+				h.Attrs = append(h.Attrs, want.Kind+" chown "+r.Owner)
+			}
+			if r.Group != "" && rec.Group != r.Group {
+				h.Attrs = append(h.Attrs, want.Kind+" chgrp "+r.Group)
+			}
+			if r.Mode != nil && (rec.Mode == nil || *rec.Mode != *r.Mode) {
+				h.Attrs = append(h.Attrs, fmt.Sprintf("%s chmod %#o", want.Kind, *r.Mode))
+			}
+			break
+		}
+	}
+	return h
 }

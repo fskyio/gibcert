@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -27,7 +26,6 @@ import (
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/deploy"
 	"gitfield.org/fsky/gibcert/internal/localca"
-	remoteerr "gitfield.org/fsky/gibcert/internal/remote"
 	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
@@ -46,7 +44,9 @@ func (p Plan) Empty() bool {
 	return len(p.Actions) == 0
 }
 
-func Compute(cfg *config.Config, store *storage.Store, now time.Time, remote deploy.Remote) (Plan, error) {
+// Compute previews what apply would do. It works offline: remote deploy
+// targets are planned from the deploy records, without contacting the hosts.
+func Compute(cfg *config.Config, store *storage.Store, now time.Time) (Plan, error) {
 	var p Plan
 	for _, account := range cfg.Accounts {
 		if action := accountAction(account, store); action != nil {
@@ -118,7 +118,7 @@ func Compute(cfg *config.Config, store *storage.Store, now time.Time, remote dep
 			})
 		}
 
-		actions, err := deployActions(cert, cfg, store, certWillChange, remote)
+		actions, err := deployActions(cert, cfg, store, certWillChange)
 		if err != nil {
 			return p, err
 		}
@@ -225,7 +225,7 @@ func localCAAction(ca *config.CA, store *storage.Store, now time.Time) *Action {
 	}
 }
 
-func deployActions(cert *config.Certificate, cfg *config.Config, store *storage.Store, certWillChange bool, remote deploy.Remote) ([]Action, error) {
+func deployActions(cert *config.Certificate, cfg *config.Config, store *storage.Store, certWillChange bool) ([]Action, error) {
 	paths := store.CertPaths(cert.Name)
 	src, err := readSources(paths)
 	if err != nil {
@@ -234,22 +234,39 @@ func deployActions(cert *config.Certificate, cfg *config.Config, store *storage.
 		}
 		return nil, err
 	}
+	meta, err := store.LoadCertMeta(cert.Name)
+	if errors.Is(err, os.ErrNotExist) {
+		meta = &storage.CertMeta{Name: cert.Name}
+	} else if err != nil {
+		return nil, fmt.Errorf("load cert metadata: %w", err)
+	}
+	material := deploy.Material{Cert: src.cert, Chain: src.chain, Fullchain: src.fullchain, Key: src.key}
 
 	var actions []Action
 	for _, d := range cert.Deploys {
+		req, reqErr := deploy.NewRequest(cert.Name, d, material)
 		for _, host := range deploy.Hosts(d) {
 			if host != "" {
-				actions = append(actions, remoteDeployActions(cert, d, host, cfg, store, src, certWillChange, remote)...)
+				actions = append(actions, remoteDeployActions(cert, d, host, cfg, meta, req, reqErr, certWillChange)...)
 				continue
 			}
-			changes, err := plannedDeployChanges(d, src, certWillChange)
+			changes, content, err := plannedDeployChanges(d, src, certWillChange)
 			if err != nil {
 				return actions, fmt.Errorf("deploy %q: %w", d.Name, err)
 			}
-			if len(changes) == 0 {
-				continue
+			// The after hook also runs for kinds not recorded as deployed,
+			// which is how a failed hook is retried.
+			var unseen []string
+			if reqErr == nil {
+				unseen = deploy.UnseenKinds(meta, req, "")
 			}
-			actions = append(actions, deployTargetActions(d, targetLabel(cert, d, ""), join(changes))...)
+			label := targetLabel(cert, d, "")
+			switch {
+			case len(changes) > 0:
+				actions = append(actions, deployTargetActions(d, label, "update", join(changes), content, content || len(unseen) > 0)...)
+			case len(unseen) > 0 && d.After != "":
+				actions = append(actions, deployTargetActions(d, label, "record", strings.Join(unseen, ", ")+" not recorded as deployed", false, true)...)
+			}
 		}
 	}
 	return actions, nil
@@ -304,32 +321,31 @@ func targetLabel(cert *config.Certificate, d *config.Deploy, host string) string
 	return label
 }
 
-// deployTargetActions returns the before hook, deploy, and after hook actions
-// for one target.
-func deployTargetActions(d *config.Deploy, label, detail string) []Action {
+// deployTargetActions returns the deploy action for one target, preceded by
+// its before hook when before is set and followed by its after hook when
+// after is set. Apply runs the before hook only when content changes, and the
+// after hook when content changes or a kind is not recorded as deployed.
+func deployTargetActions(d *config.Deploy, label, verb, detail string, before, after bool) []Action {
 	var actions []Action
-	if d.Before != "" {
+	if before && d.Before != "" {
 		actions = append(actions, Action{Subject: "hook " + label, Verb: "run", Detail: "before deploy"})
 	}
-	actions = append(actions, Action{Subject: "deploy " + label, Verb: "update", Detail: detail})
-	if d.After != "" {
+	actions = append(actions, Action{Subject: "deploy " + label, Verb: verb, Detail: detail})
+	if after && d.After != "" {
 		actions = append(actions, Action{Subject: "hook " + label, Verb: "run", Detail: "after deploy"})
 	}
 	return actions
 }
 
-// remoteDeployActions plans one target on one remote host. Remote problems
-// become actions, never errors.
-func remoteDeployActions(cert *config.Certificate, d *config.Deploy, host string, cfg *config.Config, store *storage.Store, src sources, certWillChange bool, remote deploy.Remote) []Action {
+// remoteDeployActions plans one target on one remote host from the deploy
+// records alone; the host is never contacted. Problems become actions, never
+// errors.
+func remoteDeployActions(cert *config.Certificate, d *config.Deploy, host string, cfg *config.Config, meta *storage.CertMeta, req deploy.Request, reqErr error, certWillChange bool) []Action {
 	label := targetLabel(cert, d, host)
 	problem := func(verb, detail string) []Action {
 		return []Action{{Subject: "deploy " + label, Verb: verb, Detail: detail}}
 	}
-	if remote == nil {
-		return problem("unchecked", "remote hosts are not contacted")
-	}
-	hostCfg := cfg.FindHost(host)
-	if hostCfg == nil {
+	if cfg.FindHost(host) == nil {
 		return problem("error", fmt.Sprintf("host %q is not configured", host))
 	}
 	if certWillChange {
@@ -346,57 +362,47 @@ func remoteDeployActions(cert *config.Certificate, d *config.Deploy, host string
 		if len(kinds) == 0 {
 			return nil
 		}
-		return deployTargetActions(d, label, strings.Join(kinds, ", "))
+		return deployTargetActions(d, label, "update", strings.Join(kinds, ", "), true, true)
 	}
-	req, err := deploy.NewRequest(cert.Name, d, deploy.Material{
-		Cert: src.cert, Chain: src.chain, Fullchain: src.fullchain, Key: src.key,
-	})
-	if err != nil {
-		return problem("error", err.Error())
+	if reqErr != nil {
+		return problem("error", reqErr.Error())
 	}
-	meta, err := store.LoadCertMeta(cert.Name)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return problem("error", err.Error())
-		}
-		meta = &storage.CertMeta{}
-	}
-	req.Unseen = deploy.UnseenKinds(meta, req, host)
-	res, err := remote.Apply(hostCfg, req, true, io.Discard)
-	if err != nil {
-		var rerr *remoteerr.Error
-		if errors.As(err, &rerr) {
-			return problem("error", rerr.Message)
-		}
-		return problem("unreachable", err.Error())
-	}
-	kinds := res.Changed
-	if len(kinds) == 0 {
-		kinds = req.Unseen
-	}
-	if len(kinds) == 0 {
+	recorded := deploy.RecordedOnHost(meta, req, host)
+	if recorded.Current() {
 		return nil
 	}
-	changes := make([]string, len(kinds))
-	for i, k := range kinds {
-		changes[i] = k + " update"
+	var changes []string
+	for _, k := range recorded.Unseen {
+		changes = append(changes, k+" update")
 	}
-	return deployTargetActions(d, label, join(changes))
+	changes = append(changes, recorded.Attrs...)
+	hooks := len(recorded.Unseen) > 0
+	if recorded.Failure == nil {
+		return deployTargetActions(d, label, "update", join(changes), hooks, hooks)
+	}
+	detail := "last attempt failed: " + recorded.Failure.Error
+	if len(changes) > 0 {
+		detail = join(changes) + "; " + detail
+	}
+	return deployTargetActions(d, label, "retry", detail, hooks, hooks)
 }
 
-func plannedDeployChanges(d *config.Deploy, src sources, certWillChange bool) ([]string, error) {
+// plannedDeployChanges lists the changes deploying d would make on this
+// machine, and reports whether any of them rewrites content.
+func plannedDeployChanges(d *config.Deploy, src sources, certWillChange bool) ([]string, bool, error) {
 	var changes []string
+	content := false
 	var derCert, derKey []byte
 	if d.CertDER != "" {
 		var err error
 		if derCert, err = deploy.CertPEMToDER(src.cert); err != nil {
-			return nil, fmt.Errorf("cert-der: %w", err)
+			return nil, false, fmt.Errorf("cert-der: %w", err)
 		}
 	}
 	if d.KeyDER != "" {
 		var err error
 		if derKey, err = deploy.KeyPEMToDER(src.key); err != nil {
-			return nil, fmt.Errorf("key-der: %w", err)
+			return nil, false, fmt.Errorf("key-der: %w", err)
 		}
 	}
 	items := []struct {
@@ -417,51 +423,75 @@ func plannedDeployChanges(d *config.Deploy, src sources, certWillChange bool) ([
 		if it.dst == "" || len(it.data) == 0 {
 			continue
 		}
-		itemChanges, err := plannedFileChanges(it.dst, it.name, it.data, it.mode, d, certWillChange)
+		itemChanges, itemContent, err := plannedFileChanges(it.dst, it.name, it.data, it.mode, d, certWillChange)
 		if err != nil {
-			return changes, err
+			return changes, content, err
 		}
 		changes = append(changes, itemChanges...)
+		content = content || itemContent
 	}
-	return changes, nil
+	return changes, content, nil
 }
 
-func plannedFileChanges(dst, name string, data []byte, defaultMode os.FileMode, d *config.Deploy, certWillChange bool) ([]string, error) {
-	info, err := os.Stat(dst)
+// plannedFileChanges mirrors how a local deploy treats one destination, and
+// reports whether its content changes.
+func plannedFileChanges(dst, name string, data []byte, defaultMode os.FileMode, d *config.Deploy, certWillChange bool) ([]string, bool, error) {
+	info, err := os.Lstat(dst)
 	if errors.Is(err, os.ErrNotExist) {
-		return []string{name + " create"}, nil
+		return []string{name + " create"}, true, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// A deploy never writes through a link: it replaces the link with
+		// a regular file.
+		return []string{name + " update"}, true, nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("destination %s is not a regular file", dst)
 	}
 
 	var changes []string
-	if certWillChange {
-		changes = append(changes, name+" update")
-	} else {
+	content := certWillChange
+	if !certWillChange {
 		existing, err := os.ReadFile(dst)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if !bytes.Equal(existing, data) {
-			changes = append(changes, name+" update")
-		}
+		content = !bytes.Equal(existing, data)
+	}
+	if content {
+		changes = append(changes, name+" update")
 	}
 
-	desiredMode, err := deploy.DesiredMode(defaultMode, info, d)
-	if err != nil {
-		return nil, err
+	// Match staging's trust check: an unprivileged process with an explicit
+	// mode cannot give a new key to another user.
+	inherit := info
+	if defaultMode == 0o600 &&
+		(d.Mode == nil || (os.Geteuid() == 0 && (d.Owner == "" || d.Group == ""))) {
+		trusted, err := deploy.InheritTrusted(dst, info)
+		if err != nil {
+			return nil, false, err
+		}
+		if !trusted {
+			inherit = nil
+		}
 	}
-	if info.Mode().Perm() != desiredMode {
+	desiredMode, err := deploy.DesiredMode(defaultMode, inherit, d)
+	if err != nil {
+		return nil, false, err
+	}
+	if deploy.ModeDiffers(info.Mode().Perm(), desiredMode) {
 		changes = append(changes, fmt.Sprintf("%s chmod %#o", name, desiredMode))
 	}
 
 	ownerGroupChanges, err := plannedOwnerGroupChanges(info, name, d)
 	if err != nil {
-		return changes, err
+		return changes, content, err
 	}
 	changes = append(changes, ownerGroupChanges...)
-	return changes, nil
+	return changes, content, nil
 }
 
 func plannedOwnerGroupChanges(info os.FileInfo, name string, d *config.Deploy) ([]string, error) {

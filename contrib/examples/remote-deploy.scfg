@@ -10,6 +10,16 @@
 #
 # `before`/`after` hooks of a remote deploy run on the remote host as the ssh
 # login user. `reload` hooks always run locally.
+#
+# The login user `gibdeploy` is unprivileged. It cannot give files to another
+# owner, so the targets set no `owner`: each destination directory is a setgid
+# directory of the service's group that gibdeploy may write, for example
+# (as root on the host):
+#
+#   install -d -o root -g ssl-cert -m 2750 /etc/nginx/tls/example.com
+#   setfacl -m u:gibdeploy:rwx /etc/nginx/tls/example.com
+#
+# Hooks that need privileges call a narrow sudoers rule with `sudo -n`.
 
 account letsencrypt {
 	ca letsencrypt
@@ -46,7 +56,6 @@ certificate example.com {
 		host web1 web2
 		fullchain /etc/nginx/tls/example.com/fullchain.pem
 		key /etc/nginx/tls/example.com/privkey.pem
-		owner root
 		group ssl-cert
 		mode 0640
 		after "sudo -n systemctl reload nginx"

@@ -38,6 +38,7 @@ import (
 
 	"gitfield.org/fsky/gibcert/internal/acme"
 	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
@@ -51,9 +52,10 @@ func TestIssueRejectsInvalidChainWithoutChangingState(t *testing.T) {
 		{"different-key", "public key does not match"},
 		{"missing-dns", "requested name"},
 		{"missing-ip", "requested name"},
-		{"missing-wildcard", "requested wildcard"},
+		{"missing-wildcard", "requested name"},
 		{"expired", "not currently valid"},
 		{"future", "not currently valid"},
+		{"future-beyond-skew", "not currently valid"},
 		{"expired-intermediate", "certificate 2 is not currently valid"},
 		{"ca-leaf", "leaf is a CA"},
 		{"client-only", "TLS server authentication"},
@@ -141,6 +143,92 @@ func TestIssueAcceptsPrivateChainAndRequestedSANs(t *testing.T) {
 				if err != nil || string(archived) != string(oldKey) {
 					t.Fatalf("archive does not preserve previous live key: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// A CA may add SANs it was not asked for and may not backdate notBefore. Such
+// a leaf is stored once and then stays current until configuration changes.
+func TestIssueAcceptsCAAddedSANAndClockSkew(t *testing.T) {
+	store, cert := seedIssueState(t, "reused")
+	client, _ := fakeIssueClient(t, nil, func(csr *x509.CertificateRequest) []byte {
+		return issueResponseChain(t, csr, "extra-san-skewed")
+	})
+	if err := Issue(context.Background(), client, cert, store, &config.Config{}, IssueOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	leaf, err := renew.LoadLeaf(cert, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missing := renew.MissingSAN(leaf, []string{"www.example.com"}); missing {
+		t.Fatal("stored leaf lacks the CA-added SAN")
+	}
+	if d := renew.ShouldRenew(&config.Config{}, cert, store, time.Now()); d.Due {
+		t.Fatalf("leaf with CA-added SAN is due: %s", d.Reason)
+	}
+	for _, names := range [][]string{
+		append(append([]string(nil), cert.Names...), "mail.example.com"),
+		cert.Names[1:],
+	} {
+		desired := *cert
+		desired.Names = names
+		if d := renew.ShouldRenew(&config.Config{}, &desired, store, time.Now()); !d.Due {
+			t.Fatalf("configured names %v left leaf current", names)
+		}
+	}
+}
+
+func TestValidateIssuedChainNamesAndNotBefore(t *testing.T) {
+	key, err := storage.GenerateAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := func(names ...string) [][]byte {
+		csr := &x509.CertificateRequest{PublicKey: key.Public()}
+		for _, name := range names {
+			if ip := net.ParseIP(name); ip != nil {
+				csr.IPAddresses = append(csr.IPAddresses, ip)
+			} else {
+				csr.DNSNames = append(csr.DNSNames, name)
+			}
+		}
+		der, err := pemChainToDER(issueResponseChain(t, csr, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return der
+	}
+	now := time.Now()
+	tests := []struct {
+		name      string
+		sans      []string
+		requested []string
+		now       time.Time
+		wantErr   string
+	}{
+		{name: "normalized literal match", sans: []string{"www.example.com", "*.example.com", "2001:db8::1"},
+			requested: []string{"WWW.Example.com", "*.EXAMPLE.com", "2001:0db8:0:0:0:0:0:1"}, now: now},
+		{name: "extra SAN accepted", sans: []string{"example.com", "www.example.com"}, requested: []string{"example.com"}, now: now},
+		{name: "wildcard does not cover host", sans: []string{"*.example.com"}, requested: []string{"www.example.com"},
+			now: now, wantErr: `requested name "www.example.com"`},
+		{name: "host does not satisfy wildcard", sans: []string{"www.example.com"}, requested: []string{"*.example.com"},
+			now: now, wantErr: `requested name "*.example.com"`},
+		// issueResponseChain starts validity one hour before its own clock.
+		{name: "notBefore 2m ahead accepted", sans: []string{"example.com"}, requested: []string{"example.com"},
+			now: now.Add(-time.Hour - 2*time.Minute)},
+		{name: "notBefore 10m ahead rejected", sans: []string{"example.com"}, requested: []string{"example.com"},
+			now: now.Add(-time.Hour - 10*time.Minute), wantErr: "not currently valid"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateIssuedChain(chain(tc.sans...), key, tc.requested, tc.now)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("validateIssuedChain: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("validateIssuedChain error = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -254,6 +342,11 @@ func issueResponseChain(t *testing.T, csr *x509.CertificateRequest, defect strin
 		leaf.NotBefore, leaf.NotAfter = now.Add(-2*time.Hour), now.Add(-time.Hour)
 	case "future":
 		leaf.NotBefore, leaf.NotAfter = now.Add(time.Hour), now.Add(2*time.Hour)
+	case "future-beyond-skew":
+		leaf.NotBefore = now.Add(10 * time.Minute)
+	case "extra-san-skewed":
+		leaf.DNSNames = append(leaf.DNSNames, "www.example.com")
+		leaf.NotBefore = now.Add(2 * time.Minute)
 	case "ca-leaf":
 		leaf.IsCA, leaf.BasicConstraintsValid = true, true
 	case "client-only":

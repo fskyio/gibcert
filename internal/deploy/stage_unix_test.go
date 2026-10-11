@@ -121,6 +121,9 @@ func TestDeployRollbackRetainsBackupOnRestoreFailure(t *testing.T) {
 	if err := staged.prepare(req, io.Discard); err != nil {
 		t.Fatal(err)
 	}
+	// Backups are owner-only until rollback restores the original 0640.
+	assertMode(t, staged.files[2].backup, 0o600)
+	assertMode(t, staged.files[3].backup, 0o600)
 	if err := staged.install(); err != nil {
 		t.Fatal(err)
 	}
@@ -216,5 +219,194 @@ func assertNoDeployStages(t *testing.T, dirs ...string) {
 				t.Fatalf("staged material left behind: %s", filepath.Join(dir, entry.Name()))
 			}
 		}
+	}
+}
+
+func TestApplyReplacesSymlinkWithoutReadingThrough(t *testing.T) {
+	root := t.TempDir()
+	secret := filepath.Join(root, "secret")
+	if err := os.WriteFile(secret, []byte("secret"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "deploy")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "fullchain.pem")
+	if err := os.Symlink(secret, dst); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Cert: "c", Target: "t", Files: []File{{Kind: "fullchain", Path: dst, Data: []byte("fullchain")}}}
+
+	if _, err := Apply(req, ApplyOptions{RefuseSymlinks: true}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Apply refusing symlinks = %v, want symbolic link error", err)
+	}
+
+	var out bytes.Buffer
+	staged := stagedDeploy{}
+	defer staged.cleanup()
+	if err := staged.prepare(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "replacing symbolic link") {
+		t.Fatalf("output %q, want symbolic link warning", out.String())
+	}
+	if got := staged.result.Changed; len(got) != 1 || got[0] != "fullchain" {
+		t.Fatalf("changed = %v, want fullchain", got)
+	}
+	// Staging creates no backup for a link: only the new file is staged.
+	if f := staged.files[2]; f.backup != "" || !f.link || f.linkTarget != secret {
+		t.Fatalf("staged link backup %q, link %v to %q; want only the target %q recorded", f.backup, f.link, f.linkTarget, secret)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
+		t.Fatalf("staging left %v (%v), want the link and one staged file", entries, err)
+	}
+	if err := staged.install(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(dst); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("installed destination is not a regular file: %v", err)
+	}
+	assertDeployBytes(t, dst, []byte("fullchain"))
+	assertMode(t, dst, 0o644)
+	if err := staged.rollback(); err != nil {
+		t.Fatal(err)
+	}
+	staged.cleanup()
+	if target, err := os.Readlink(dst); err != nil || target != secret {
+		t.Fatalf("rollback did not restore the link: %q, %v", target, err)
+	}
+	assertDeployBytes(t, secret, []byte("secret"))
+	assertMode(t, secret, 0o640)
+	assertNoDeployStages(t, dir)
+
+	if _, err := Apply(req, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(dst); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("applied destination is not a regular file: %v", err)
+	}
+	assertDeployBytes(t, secret, []byte("secret"))
+	assertNoDeployStages(t, dir)
+}
+
+func TestRollbackReportsLinkTargetWhenRestoreFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write permission failures")
+	}
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	dst := filepath.Join(dir, "fullchain.pem")
+	target := filepath.Join(dir, "elsewhere.pem")
+	if err := os.Symlink(target, dst); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Cert: "c", Target: "t", Files: []File{{Kind: "fullchain", Path: dst, Data: []byte("fullchain")}}}
+	var staged stagedDeploy
+	defer staged.cleanup()
+	if err := staged.prepare(req, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := staged.install(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	err := staged.rollback()
+	if err == nil || !strings.Contains(err.Error(), "symbolic link to \""+target+"\"") {
+		t.Fatalf("rollback = %v, want the link target reported", err)
+	}
+	assertDeployBytes(t, dst, []byte("fullchain"))
+}
+
+func TestApplyDoesNotInheritFromKeyInSharedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "key.pem")
+	fullchain := filepath.Join(dir, "fullchain.pem")
+	for _, path := range []string{key, fullchain} {
+		if err := os.WriteFile(path, []byte("planted"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := Request{Cert: "c", Target: "t", Files: []File{
+		{Kind: "fullchain", Path: fullchain, Data: []byte("fullchain")},
+		{Kind: "key", Path: key, Data: []byte("key")},
+	}}
+	var out bytes.Buffer
+	if _, err := Apply(req, ApplyOptions{Out: &out}); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, key, 0o600)
+	assertMode(t, fullchain, 0o640)
+	if !strings.Contains(out.String(), key+": not inheriting") {
+		t.Fatalf("output %q, want untrusted key warning", out.String())
+	}
+}
+
+func TestApplyDryRunCreatesAndWritesNothing(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "existing")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(existing, "key.pem")
+	if err := os.WriteFile(key, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "missing")
+	req := Request{Cert: "c", Target: "t", Files: []File{
+		{Kind: "fullchain", Path: filepath.Join(missing, "sub", "fullchain.pem"), Data: []byte("fullchain")},
+		{Kind: "key", Path: key, Data: []byte("key")},
+	}}
+	res, err := Apply(req, ApplyOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(res.Changed, ","); got != "fullchain,key" {
+		t.Fatalf("changed = %q, want fullchain,key", got)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("dry run created %s: %v", missing, err)
+	}
+	assertDeployBytes(t, key, []byte("old"))
+	assertNoDeployStages(t, root, existing)
+
+	blocker := filepath.Join(root, "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req.Files = []File{{Kind: "fullchain", Path: filepath.Join(blocker, "sub", "fullchain.pem"), Data: []byte("fullchain")}}
+	if _, err := Apply(req, ApplyOptions{DryRun: true}); err == nil {
+		t.Fatal("dry run accepted a destination below a regular file")
+	}
+}
+
+func TestApplyDoesNotWaitForHookBackgroundOutput(t *testing.T) {
+	saved := hookWaitDelay
+	hookWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { hookWaitDelay = saved })
+	dst := filepath.Join(t.TempDir(), "fullchain.pem")
+	req := Request{Cert: "c", Target: "t", Files: []File{{Kind: "fullchain", Path: dst, Data: []byte("fullchain")}}, After: "sleep 3 &"}
+	var out, hook bytes.Buffer
+	start := time.Now()
+	res, err := Apply(req, ApplyOptions{Out: &out, HookStdout: &hook, HookStderr: &hook})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Apply waited %v for the hook's background process", elapsed)
+	}
+	if len(res.Changed) != 1 || !strings.Contains(out.String(), "background process") {
+		t.Fatalf("changed %v, output %q", res.Changed, out.String())
 	}
 }

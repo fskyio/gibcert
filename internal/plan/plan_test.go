@@ -22,8 +22,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
-	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -33,8 +31,6 @@ import (
 
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/deploy"
-	"gitfield.org/fsky/gibcert/internal/receive"
-	"gitfield.org/fsky/gibcert/internal/remote"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
@@ -42,7 +38,7 @@ func TestComputePlansMissingState(t *testing.T) {
 	store := storage.New(t.TempDir())
 	cfg := testConfig(t.TempDir())
 
-	pl, err := Compute(cfg, store, time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC), nil)
+	pl, err := Compute(cfg, store, time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -98,7 +94,7 @@ func TestComputeNoChanges(t *testing.T) {
 		}
 	}
 
-	pl, err := Compute(cfg, store, time.Now(), nil)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -146,7 +142,7 @@ func TestComputePlansBeforeAndAfterDeployHooks(t *testing.T) {
 		}
 	}
 
-	pl, err := Compute(cfg, store, time.Now(), nil)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -172,7 +168,7 @@ func TestComputeReportsOrphanCertificateState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pl, err := Compute(testConfig(root), store, time.Now(), nil)
+	pl, err := Compute(testConfig(root), store, time.Now())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -197,7 +193,7 @@ func TestComputePlansImplicitACMEAccount(t *testing.T) {
 		}},
 	}
 
-	pl, err := Compute(cfg, store, time.Now(), nil)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -230,7 +226,7 @@ func TestComputePlansLocalCAAndSigning(t *testing.T) {
 		}},
 	}
 
-	pl, err := Compute(cfg, store, time.Now(), nil)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -309,18 +305,20 @@ func renderActions(actions []Action) string {
 	return b.String()
 }
 
-type fakeRemote struct {
-	calls   int
-	changed []string
-	err     error
-}
-
-func (f *fakeRemote) Apply(host *config.Host, req deploy.Request, dryRun bool, out io.Writer) (deploy.Result, error) {
-	f.calls++
-	if f.err != nil {
-		return deploy.Result{}, f.err
+func saveRemoteRecords(t *testing.T, cfg *config.Config, store *storage.Store, failures ...storage.CertDeployFailure) {
+	t.Helper()
+	req, err := deploy.NewRequest("example.com", cfg.Certificates[0].Deploys[1], deploy.Material{
+		Fullchain: mustRead(t, store.CertPaths("example.com").Fullchain),
+		Key:       []byte("key"),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return deploy.Result{Target: req.Target, Host: host.Name, Changed: f.changed}, nil
+	if err := store.SaveCertMeta("example.com", storage.CertMeta{
+		Name: "example.com", Deploys: req.Records("web1", time.Now()), DeployFailures: failures,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // remoteFixture returns a config with a local target and a remote target on
@@ -377,8 +375,7 @@ func remoteFixture(t *testing.T, stored bool) (*config.Config, *storage.Store, [
 
 func TestComputeRemoteTargetPendingWithoutMaterial(t *testing.T) {
 	cfg, store, _ := remoteFixture(t, false)
-	fake := &fakeRemote{}
-	pl, err := Compute(cfg, store, time.Now(), fake)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,24 +388,19 @@ func TestComputeRemoteTargetPendingWithoutMaterial(t *testing.T) {
 			t.Fatalf("actions:\n%s\nmissing %q", got, want)
 		}
 	}
-	if fake.calls != 0 {
-		t.Fatalf("remote contacted %d times", fake.calls)
-	}
 }
 
-func TestComputeRemoteTargetCertificateWillChangeNotContacted(t *testing.T) {
-	cfg, store, certPEM := remoteFixture(t, true)
+func TestComputeRemoteTargetCertificateWillChange(t *testing.T) {
+	cfg, store, _ := remoteFixture(t, true)
 	// Expired certificate: renewal is due.
 	paths := store.CertPaths("example.com")
 	expired := makeCertPEM(t, time.Now().Add(-48*time.Hour), time.Now().Add(-time.Hour))
-	_ = certPEM
 	for _, p := range []string{paths.Cert, paths.Fullchain} {
 		if err := os.WriteFile(p, expired, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	fake := &fakeRemote{}
-	pl, err := Compute(cfg, store, time.Now(), fake)
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,15 +414,13 @@ func TestComputeRemoteTargetCertificateWillChangeNotContacted(t *testing.T) {
 			t.Fatalf("actions:\n%s\nmissing %q", got, want)
 		}
 	}
-	if fake.calls != 0 {
-		t.Fatalf("remote contacted %d times", fake.calls)
-	}
 }
 
-func TestComputeRemoteDryRunChangesAndCurrent(t *testing.T) {
+func TestComputeRemotePlansFromRecords(t *testing.T) {
 	cfg, store, _ := remoteFixture(t, true)
-	fake := &fakeRemote{changed: []string{"fullchain", "key"}}
-	pl, err := Compute(cfg, store, time.Now(), fake)
+	// Nothing recorded for the host: the kinds are installed and the hooks
+	// are planned.
+	pl, err := Compute(cfg, store, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,69 +438,64 @@ func TestComputeRemoteDryRunChangesAndCurrent(t *testing.T) {
 		t.Fatalf("current local target should have no actions:\n%s", got)
 	}
 
-	// Record the target as installed: nothing changed and nothing unseen.
-	req, err := deploy.NewRequest("example.com", cfg.Certificates[0].Deploys[1], deploy.Material{
+	// Recorded as installed: nothing to do.
+	saveRemoteRecords(t, cfg, store)
+	if pl, err = Compute(cfg, store, time.Now()); err != nil || !pl.Empty() {
+		t.Fatalf("got %v, actions:\n%s", err, renderActions(pl.Actions))
+	}
+
+	// A changed mode is an update of the attributes alone: no hook runs.
+	remoteTarget := cfg.Certificates[0].Deploys[1]
+	remoteTarget.Mode = modePtr(0o640)
+	if pl, err = Compute(cfg, store, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := renderActions(pl.Actions); got != "deploy example.com/nginx@web1:update:fullchain chmod 0640, key chmod 0640\n" {
+		t.Fatalf("actions:\n%s", got)
+	}
+	remoteTarget.Mode = nil
+
+	// A failed attempt is retried and its error shown.
+	saveRemoteRecords(t, cfg, store, storage.CertDeployFailure{Target: "nginx", Host: "web1", Error: "ssh failed"})
+	if pl, err = Compute(cfg, store, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := renderActions(pl.Actions); got != "deploy example.com/nginx@web1:retry:last attempt failed: ssh failed\n" {
+		t.Fatalf("actions:\n%s", got)
+	}
+}
+
+func TestComputeLocalHooksOnlyWhenTheyRun(t *testing.T) {
+	cfg, store, _ := remoteFixture(t, true)
+	cfg.Certificates[0].Deploys = cfg.Certificates[0].Deploys[:1]
+	local := cfg.Certificates[0].Deploys[0]
+	local.Before, local.After = "systemctl stop service", "systemctl start service"
+
+	// Content in place but never recorded: the after hook is still owed.
+	pl, err := Compute(cfg, store, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := renderActions(pl.Actions); got != "deploy example.com/local:record:fullchain, key not recorded as deployed\nhook example.com/local:run:after deploy\n" {
+		t.Fatalf("actions:\n%s", got)
+	}
+
+	// Recorded, and only the mode differs: no hook runs.
+	req, err := deploy.NewRequest("example.com", local, deploy.Material{
 		Fullchain: mustRead(t, store.CertPaths("example.com").Fullchain),
 		Key:       []byte("key"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveCertMeta("example.com", storage.CertMeta{
-		Name: "example.com", Deploys: req.Records("web1", time.Now()),
-	}); err != nil {
+	if err := store.SaveCertMeta("example.com", storage.CertMeta{Name: "example.com", Deploys: req.Records("", time.Now())}); err != nil {
 		t.Fatal(err)
 	}
-	fake = &fakeRemote{}
-	pl, err = Compute(cfg, store, time.Now(), fake)
-	if err != nil {
+	local.Mode = modePtr(0o640)
+	if pl, err = Compute(cfg, store, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if !pl.Empty() {
-		t.Fatalf("got actions:\n%s", renderActions(pl.Actions))
-	}
-	if fake.calls != 1 {
-		t.Fatalf("calls = %d, want 1", fake.calls)
-	}
-
-	// Unchanged on the host but unseen by the sender: the after hook is owed.
-	if err := store.SaveCertMeta("example.com", storage.CertMeta{Name: "example.com"}); err != nil {
-		t.Fatal(err)
-	}
-	pl, err = Compute(cfg, store, time.Now(), &fakeRemote{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := renderActions(pl.Actions); !strings.Contains(got, "example.com/nginx@web1:update:fullchain update, key update") {
-		t.Fatalf("unseen not planned:\n%s", got)
-	}
-}
-
-func TestComputeRemoteFailuresBecomeActions(t *testing.T) {
-	cfg, store, _ := remoteFixture(t, true)
-	pl, err := Compute(cfg, store, time.Now(), &fakeRemote{err: errors.New("web1: ssh failed")})
-	if err != nil {
-		t.Fatalf("remote failure must not fail Compute: %v", err)
-	}
-	if got := renderActions(pl.Actions); !strings.Contains(got, "deploy example.com/nginx@web1:unreachable:web1: ssh failed") {
-		t.Fatalf("actions:\n%s", got)
-	}
-	pl, err = Compute(cfg, store, time.Now(), &fakeRemote{err: &remote.Error{Host: "web1", Code: receive.CodePermission, Message: "cannot write /etc/nginx"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := renderActions(pl.Actions); !strings.Contains(got, "deploy example.com/nginx@web1:error:cannot write /etc/nginx") {
-		t.Fatalf("actions:\n%s", got)
-	}
-}
-
-func TestComputeRemoteNilRemoteUnchecked(t *testing.T) {
-	cfg, store, _ := remoteFixture(t, true)
-	pl, err := Compute(cfg, store, time.Now(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := renderActions(pl.Actions); !strings.Contains(got, "deploy example.com/nginx@web1:unchecked:remote hosts are not contacted") {
+	if got := renderActions(pl.Actions); got != "deploy example.com/local:update:fullchain chmod 0640, key chmod 0640\n" {
 		t.Fatalf("actions:\n%s", got)
 	}
 }

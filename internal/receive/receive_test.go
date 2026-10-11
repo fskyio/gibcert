@@ -20,11 +20,13 @@ package receive
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gitfield.org/fsky/gibcert/internal/deploy"
 )
@@ -92,6 +94,59 @@ func TestServeApplyKeepsStdoutToTheResponse(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, "privkey.pem"))
 	if err != nil || info.Mode().Perm() != 0o640 {
 		t.Fatalf("key = %v, %v; want mode 0640", info, err)
+	}
+}
+
+func TestServeReturnsWarningsAndInstalledKindsOnHookFailure(t *testing.T) {
+	dir := t.TempDir()
+	req := request(dir)
+	req.Mode = nil
+	req.After = "echo hook broke >&2; exit 3"
+	var stdout, stderr bytes.Buffer
+	if code := Serve(envelope(t, Envelope{Op: OpApply, Request: &req}), &stdout, &stderr); code == 0 {
+		t.Fatal("Serve succeeded although the after hook failed")
+	}
+	resp := decode(t, stdout.String())
+	if resp.OK || resp.Error == nil || strings.Join(resp.Changed, ",") != "fullchain,key" {
+		t.Fatalf("response = %+v, want failure listing the installed kinds", resp)
+	}
+	if len(resp.Warnings) != 2 || !strings.HasPrefix(resp.Warnings[0], "warning: ") {
+		t.Fatalf("warnings = %q, want one per created file", resp.Warnings)
+	}
+	if !strings.Contains(stderr.String(), "hook broke") || strings.Contains(stderr.String(), "warning") {
+		t.Fatalf("stderr = %q, want hook output only", stderr.String())
+	}
+}
+
+func TestServeDoesNotLetBackgroundedHooksHoldItsOutput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	req := request(t.TempDir())
+	req.After = "echo started; sleep 30 &"
+	var stdout bytes.Buffer
+	start := time.Now()
+	code := Serve(envelope(t, Envelope{Op: OpApply, Request: &req}), &stdout, w)
+	w.Close()
+	if code != 0 || time.Since(start) > 20*time.Second {
+		t.Fatalf("Serve = %d after %v: %s", code, time.Since(start), stdout.String())
+	}
+	// The background process must not have inherited the stderr the SSH
+	// session waits on: with the receiver's copy closed, it reaches EOF.
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		if !strings.Contains(string(b), "started") {
+			t.Fatalf("stderr = %q, want hook output", b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a backgrounded hook process still holds the receiver's stderr")
 	}
 }
 

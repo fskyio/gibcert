@@ -5,6 +5,7 @@ before:
     - go mod tidy
     - go generate ./...
     - sh -c 'mkdir -p contrib/completions && go run ./cmd/gibcert completion bash > contrib/completions/gibcert.bash && go run ./cmd/gibcert completion zsh > contrib/completions/_gibcert && go run ./cmd/gibcert completion fish > contrib/completions/gibcert.fish'
+    - sh -c 'mkdir -p build/man && gzip -9nc docs/man/gibcert.1 > build/man/gibcert.1.gz && gzip -9nc docs/man/gibcert.scfg.5 > build/man/gibcert.scfg.5.gz'
 
 builds:
   - id: gibcert
@@ -96,6 +97,8 @@ nfpms:
         dst: /usr/share/doc/gibcert/examples/dns-cloudflare.scfg
       - src: contrib/examples/local-ca.scfg
         dst: /usr/share/doc/gibcert/examples/local-ca.scfg
+      - src: contrib/examples/remote-deploy.scfg
+        dst: /usr/share/doc/gibcert/examples/remote-deploy.scfg
       - src: contrib/systemd/gibcert.service
         dst: /lib/systemd/system/gibcert.service
       - src: contrib/systemd/gibcert.timer
@@ -106,10 +109,10 @@ nfpms:
         dst: /usr/share/zsh/vendor-completions/_gibcert
       - src: contrib/completions/gibcert.fish
         dst: /usr/share/fish/vendor_completions.d/gibcert.fish
-      - src: docs/man/gibcert.1
-        dst: /usr/share/man/man1/gibcert.1
-      - src: docs/man/gibcert.scfg.5
-        dst: /usr/share/man/man5/gibcert.scfg.5
+      - src: build/man/gibcert.1.gz
+        dst: /usr/share/man/man1/gibcert.1.gz
+      - src: build/man/gibcert.scfg.5.gz
+        dst: /usr/share/man/man5/gibcert.scfg.5.gz
       - dst: /etc/gibcert/conf.d
         type: dir
       - dst: /var/lib/gibcert
@@ -132,5 +135,6 @@ release:
     owner: fsky
     name: gibcert
   name_template: "gibcert v{{ .Version }}"
+  prerelease: auto
   disable: false
   mode: append

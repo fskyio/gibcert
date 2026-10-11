@@ -286,11 +286,16 @@ and dns-persist-01.
 .B renew { before-expiry \fIDURATION\fR }
 Renewal window. If unset, gibcert uses one third of the current certificate
 lifetime, capped at 30 days.
-SAN or known issuer changes make a leaf due immediately, regardless of this
-window. SAN sets ignore order and normalize DNS case and IP spellings;
-wildcards are exact. Issuer identity includes type, account, CA, and directory.
-A configured failover issuer remains acceptable. Imported certificates and
-incomplete legacy metadata do not establish issuer ownership.
+Configured name or known issuer changes make a leaf due immediately, regardless
+of this window. Names are compared as sets with the names recorded as requested
+for the stored leaf; order, DNS case, and IP spellings are ignored, and
+wildcards are exact. The leaf must list every configured name; extra SANs
+added by the CA are ignored. Without a matching issuance record, the actual
+SAN set must equal the configured names. Issuer identity includes type,
+account, CA, and directory. A configured failover issuer remains acceptable,
+including legacy records naming the primary account with the failover's CA
+and directory. Imported certificates and incomplete legacy metadata do not
+establish issuer ownership.
 .TP
 .B deploy \fINAME\fR { ... }
 Deployment target. Optional; a certificate with no deploy blocks is still
@@ -362,10 +367,13 @@ single-certificate commands such as
 .B gibcert issue.
 In
 .B renew,
-a required certificate that is already valid (and so not renewed this run)
-counts as satisfied; gating only triggers when a required certificate is
-processed and fails. Each name must reference another certificate; a certificate
-cannot depend on itself, repeat a name, or list a name in both
+a required certificate that was not due counts as satisfied even if its
+deploy or TLSA reconciliation fails; the error is reported and renew exits 1,
+but dependents proceed. A due certificate whose issuance or deploy fails
+still gates dependents. In apply, a failed deploy gates dependents; a TLSA
+failure gates them only when it holds deployment back (see TLSA).
+Each name must reference another certificate; a certificate cannot depend on
+itself, repeat a name, or list a name in both
 .B requires
 and
 .B wants,
@@ -450,40 +458,70 @@ key-der must not grant other access or execute permission.
 .TP
 .B before \fICOMMAND\fR
 Command to run through the platform shell after staging all output files and
-attributes, before replacement. Requires an after hook for recovery.
+attributes, before replacement. Runs only when at least one file's content
+changes. Requires an after hook for recovery.
 .TP
 .B after \fICOMMAND\fR
 Command to run through the platform shell after successful replacement, or
-after a failed before hook or completed rollback. GIBCERT_EVENT is after-deploy
-on success and rollback-deploy for recovery.
+for recovery after a before hook ran and failed, or after installation failed
+and rollback completed following a before hook run. GIBCERT_EVENT is
+after\-deploy on success and rollback\-deploy for recovery.
 .PP
-At least one of cert, chain, fullchain, key, cert-der, or key-der must be set.
-All deploy paths must be absolute and must not collide with another configured
-output after path normalization.
+At least one of cert, chain, fullchain, key, cert\-der, or key\-der must be set.
+All deploy paths must start with / (including on Windows) and must not collide
+with another configured output on the same host after path normalization.
 .PP
 New public files default to 0644; new private keys default to 0600. Without an
-explicit mode, existing public-file modes are preserved and existing private-key
-modes are restricted to owner read/write bits, even when content is unchanged.
-Use an explicit mode such as 0640 for intentional group access.
+explicit mode, existing public\-file modes are preserved. Inherited private\-key
+modes lose other\-access and execute bits: 0640 and 0660 stay, while 0644 and
+0750 become 0640, with a warning. Explicit modes on a key block must not grant
+other access or execute permission; the mode applies to all files, so split
+the key into its own block if certificates must be world\-readable.
+On Windows, only the read\-only bit is compared.
 .PP
-On Unix-like systems, replacement files preserve existing owner and group for
-attributes omitted from the deploy block. An explicit owner or group changes
-only that attribute. First-time files keep process-created ownership unless
-overridden.
+On Unix\-like systems, replacement files preserve existing owner and group for
+attributes omitted from the deploy block. Explicit attributes always win.
+First\-time files keep process\-created ownership unless overridden.
+For a private key, inherited attributes must come from a trusted file: its
+directory must not be writable by group or other, and its owner must be the
+gibcert process user or the directory's owner. Otherwise defaults apply, with
+a warning. This check applies when mode is omitted, or when running as root
+with owner or group omitted.
+.PP
+Destinations must be regular files and are opened without following symbolic
+links. A local symlink is replaced by a regular file without reading through
+it or inheriting attributes, with a warning; rollback restores the link.
+On Windows, restoring a symlink needs the privilege to create one. Remote
+receivers refuse symlink destinations.
 .PP
 All outputs are staged before hooks run. Individual replacements use atomic
-renames; installation errors roll back earlier replacements. Rollback failures
-report retained backup paths and suppress recovery hooks. Multi-file updates
-are not crash-atomic; use stop/start hooks to prevent concurrent service reads.
+renames; installation errors roll back earlier replacements. Backups of
+replaced files are owner\-only (0600, owned by the gibcert process user)
+until rollback restores the original attributes. Recovery hooks run only
+after the before hook actually ran. Rollback failures report retained backup
+paths and suppress recovery hooks. Multi\-file updates are not crash\-atomic;
+use stop/start hooks to prevent concurrent service reads.
 Metadata is saved only after the success hook completes. A failed success hook
-leaves the complete new set installed and is retried by a later deploy.
+leaves the complete new set installed without rollback; changed content still
+triggers reload commands. The hook is retried later without another reload.
+.PP
+If a hook exits but leaves a background process holding its output, gibcert
+waits at most 5 seconds, then warns and discards further output. This matters
+on remote hosts, where hook output is a pipe.
 .PP
 With host set, the target is installed on the named remote hosts instead of this
 machine, by running gibcert receive over ssh. before and after hooks of such a
-target run on the remote host as the ssh login user; reload hooks always run
-locally. Remote destination paths must be absolute POSIX-style paths. In a
-group, a deploy's host list is replaced, not merged, by a certificate deploy of
-the same name. Path collisions are detected per host.
+target run as the ssh login user; their output is printed on standard error
+with a HOST: prefix. reload hooks always run locally. owner and group names
+are resolved remotely; an unprivileged login cannot set owner root.
+In a group, a deploy's host list is replaced, not merged, by a certificate
+deploy of the same name. Path collisions are detected per host.
+.PP
+renew and apply contact a remote host only when deploy records show a failed
+attempt, material not recorded as installed, or changed owner, group, or mode.
+A current host can be offline without failing the run. plan uses records and
+never contacts hosts. These commands do not detect files changed on the host;
+deploy always contacts every selected host to repair such drift.
 .SH HOST
 .TP
 .B host \fINAME\fR { ... }
@@ -522,7 +560,9 @@ and
 .SH TLSA
 .TP
 .B tlsa { ... }
-Manage DANE TLSA records for the certificate. Directives are:
+Manage DANE TLSA records for the certificate. Default owners use only the
+certificate's DNS names; IP address names are skipped. An IP\-only certificate
+must set tlsa names or omit the tlsa block. Directives are:
 .TP
 .B provider \fINAME\fR
 DNS provider used to publish and remove TLSA records. Required. Must use a
@@ -535,7 +575,7 @@ Protocol defaults to tcp; tcp, udp, and sctp are accepted.
 .TP
 .B names \fINAME\fR...
 Base (sub)domains under which TLSA records are published, replacing the
-default of the certificate's names. Names are case-insensitive; wildcard names
+default of the certificate's DNS names. Names are case\-insensitive; wildcard names
 and IP addresses are rejected. When the configured names or ports change,
 apply and renew republish the records and remove those left under owners that
 are no longer configured.
@@ -558,9 +598,16 @@ TLSA. The retired key's TLSA is removed. Local CA certificates follow the same
 rotation.
 .PP
 Between renewals, apply and renew republish TLSA records when the owners last
-published differ from the configured names and ports, or when a current
-certificate has no published records yet. Other tlsa changes, such as ttl or
-type, take effect at the next issuance or with gibcert tlsa reconcile.
+published differ from the configured names and ports, when a current
+certificate has no published records yet, or when no published record covers
+the stored key (stored key TLSA not published). Records left under owners
+no longer configured, including IP address owners from earlier versions, are
+removed. Other tlsa changes, such as ttl or type, take effect at the next
+issuance or with gibcert tlsa reconcile.
+.PP
+A failed reconciliation is reported and the run exits 1, but stored material
+is still deployed unless TLSA records were published and none covers its key.
+In that case deployment is held back until TLSA publication succeeds.
 .SH DURATIONS
 Expiry-related fields accept Go duration syntax or an integer day suffix such
 as 30d. Other duration fields use Go duration syntax such as 120s or 5m.

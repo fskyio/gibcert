@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,9 @@ func TestReconcileTLSAUsesStoredMaterialAndCreatesMetadata(t *testing.T) {
 	if meta.SerialNumber != certFixture.cert.SerialNumber.String() {
 		t.Fatalf("serial got %q, want %q", meta.SerialNumber, certFixture.cert.SerialNumber.String())
 	}
+	if len(meta.Names) != 0 {
+		t.Fatalf("names got %v, want the SAN-less leaf's empty SAN list, not configuration", meta.Names)
+	}
 	if _, err := os.Stat(paths.KeyNext); err != nil {
 		t.Fatalf("staged next key was not written: %v", err)
 	}
@@ -118,6 +122,24 @@ func TestReconcileTLSAUsesStoredMaterialAndCreatesMetadata(t *testing.T) {
 		if !strings.HasPrefix(r.Content, "3 1 1 ") {
 			t.Fatalf("record content got %q, want TLSA 3 1 1", r.Content)
 		}
+	}
+
+	// Republishing must keep the names requested for this leaf, so a later
+	// configuration change still makes the leaf due.
+	meta.Names = []string{"example.com", "old.example.com"}
+	if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
+		t.Fatal(err)
+	}
+	cert.Names = []string{"example.com"}
+	if err := ReconcileTLSA(context.Background(), store, cfg, cert, TLSAReconcileOptions{Out: io.Discard}); err != nil {
+		t.Fatalf("second ReconcileTLSA: %v", err)
+	}
+	meta, err = store.LoadCertMeta(cert.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(meta.Names, []string{"example.com", "old.example.com"}) {
+		t.Fatalf("requested names after reconcile = %v", meta.Names)
 	}
 }
 

@@ -134,11 +134,12 @@ func TestApplyInstallsOnTheRemoteSide(t *testing.T) {
 	ssh, argsFile := receiverSSH(t)
 	dir := t.TempDir()
 	req := testRequest(dir)
+	req.Mode = nil
 	req.After = "echo reloaded; echo stdout-noise"
-	c := &Client{SSH: ssh}
-	var out bytes.Buffer
+	var out, hooks bytes.Buffer
+	c := &Client{SSH: ssh, HookOutput: &hooks}
 
-	res, err := c.Apply(testHost(), req, false, &out)
+	res, err := c.Apply(testHost(), req, &out)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -148,28 +149,64 @@ func TestApplyInstallsOnTheRemoteSide(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "privkey.pem")); string(got) != "key" {
 		t.Fatalf("key = %q", got)
 	}
-	if !strings.Contains(out.String(), "web1: reloaded\n") {
-		t.Fatalf("hook output not forwarded with host prefix: %q", out.String())
+	if !strings.Contains(hooks.String(), "web1: reloaded\n") || strings.Contains(out.String(), "reloaded") {
+		t.Fatalf("hook output not forwarded to the hook writer with host prefix: hooks %q, out %q", hooks.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "web1: warning: ") || strings.Contains(hooks.String(), "warning") {
+		t.Fatalf("warnings not forwarded to out with host prefix: hooks %q, out %q", hooks.String(), out.String())
 	}
 	if args, _ := os.ReadFile(argsFile); !strings.Contains(string(args), "/usr/local/bin/gibcert receive") {
 		t.Fatalf("ssh args = %q", args)
 	}
 
-	res, err = c.Apply(testHost(), req, false, &out)
+	res, err = c.Apply(testHost(), req, &out)
 	if err != nil || len(res.Changed) != 0 {
 		t.Fatalf("second Apply = %+v, %v; want nothing changed", res, err)
+	}
+}
+
+func TestApplyReportsInstalledKindsWhenAfterHookFails(t *testing.T) {
+	ssh, _ := receiverSSH(t)
+	req := testRequest(t.TempDir())
+	req.After = "echo hook broke >&2; exit 3"
+	var hooks bytes.Buffer
+	res, err := (&Client{SSH: ssh, HookOutput: &hooks}).Apply(testHost(), req, nil)
+	if err == nil || strings.Join(res.Changed, ",") != "fullchain,key" || res.Host != "web1" {
+		t.Fatalf("Apply = %+v, %v; want the installed kinds with the error", res, err)
+	}
+	if !strings.Contains(hooks.String(), "web1: hook broke") {
+		t.Fatalf("hook output = %q", hooks.String())
 	}
 }
 
 func TestApplyDryRunChangesNothing(t *testing.T) {
 	ssh, _ := receiverSSH(t)
 	dir := t.TempDir()
-	res, err := (&Client{SSH: ssh}).Apply(testHost(), testRequest(dir), true, nil)
+	res, err := (&Client{SSH: ssh}).Check(testHost(), testRequest(dir), nil)
 	if err != nil || len(res.Changed) != 2 {
 		t.Fatalf("dry run = %+v, %v; want two kinds that would change", res, err)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("dry run left files: %v", entries)
+	}
+}
+
+func TestRemoteTextIsSanitized(t *testing.T) {
+	resp := `{"protocol":1,"ok":false,"changed":["key","shadow"],"warnings":["warning: \u001b[2Jcleared"],"error":{"code":"failed","message":"bad\u001b]0;title\u0007\nnext\u202eline"}}`
+	ssh, _ := fakeSSH(t, "printf 'hook \\033[31mred\\r\\n' >&2; printf '%s\\n' '"+resp+"'")
+	var out, hooks bytes.Buffer
+	res, err := (&Client{SSH: ssh, HookOutput: &hooks}).Apply(testHost(), testRequest(t.TempDir()), &out)
+	if err == nil || err.Error() != "bad]0;title; nextline" {
+		t.Fatalf("err = %q", err)
+	}
+	if strings.Join(res.Changed, ",") != "key" {
+		t.Fatalf("changed = %v, want only requested kinds", res.Changed)
+	}
+	if hooks.String() != "web1: hook [31mred\n" || out.String() != "web1: warning: [2Jcleared\n" {
+		t.Fatalf("hooks %q, out %q", hooks.String(), out.String())
+	}
+	if long := cleanRemote(strings.Repeat("x", 3*maxRemoteText)); len(long) > maxRemoteText+8 {
+		t.Fatalf("cleanRemote kept %d bytes", len(long))
 	}
 }
 
@@ -182,7 +219,7 @@ func TestApplyReportsReceiverFailureWithItsCode(t *testing.T) {
 	if err := os.Mkdir(locked, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	_, err := (&Client{SSH: ssh}).Apply(testHost(), testRequest(locked), true, nil)
+	_, err := (&Client{SSH: ssh}).Check(testHost(), testRequest(locked), nil)
 	var re *Error
 	if !errors.As(err, &re) || re.Code != receive.CodePermission || re.Host != "web1" {
 		t.Fatalf("err = %v, want a permission *Error for web1", err)
@@ -200,7 +237,7 @@ func TestApplyExplainsUnreachableHosts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ssh, _ := fakeSSH(t, tc.script)
-			_, err := (&Client{SSH: ssh}).Apply(testHost(), testRequest(t.TempDir()), false, nil)
+			_, err := (&Client{SSH: ssh}).Apply(testHost(), testRequest(t.TempDir()), nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `"web1"`) {
 				t.Fatalf("err = %v, want mention of %q and the host", err, tc.want)
 			}

@@ -19,11 +19,14 @@ package deploy
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
+	"time"
 
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/storage"
@@ -52,6 +55,11 @@ func TestDeployPreservesOwnershipOnReplacement(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
+			// The previous files belong to the directory's owner, so a key
+			// may inherit their ownership.
+			if err := os.Chown(root, 12345, 12346); err != nil {
+				t.Fatal(err)
+			}
 			store := storage.New(filepath.Join(root, "state"))
 			writeCanonical(t, store, "service")
 			mode := os.FileMode(0o640)
@@ -82,5 +90,40 @@ func TestDeployPreservesOwnershipOnReplacement(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type ownedInfo struct {
+	mode fs.FileMode
+	uid  uint32
+}
+
+func (i ownedInfo) Name() string       { return "owned" }
+func (i ownedInfo) Size() int64        { return 0 }
+func (i ownedInfo) Mode() fs.FileMode  { return i.mode }
+func (i ownedInfo) ModTime() time.Time { return time.Time{} }
+func (i ownedInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i ownedInfo) Sys() any           { return &syscall.Stat_t{Uid: i.uid} }
+
+func TestTrustedToInheritRejectsPlantedKeys(t *testing.T) {
+	const euid, other = 0, 1000
+	for _, tc := range []struct {
+		name    string
+		dirMode fs.FileMode
+		dirUID  uint32
+		fileUID uint32
+		trusted bool
+	}{
+		{"own file in private directory", 0o755, euid, euid, true},
+		{"directory owner's file", 0o750, other, other, true},
+		{"another user's file", 0o755, euid, other, false},
+		{"group-writable directory", 0o775, euid, euid, false},
+		{"sticky world-writable directory", fs.ModeSticky | 0o777, euid, euid, false},
+	} {
+		dir := ownedInfo{mode: fs.ModeDir | tc.dirMode, uid: tc.dirUID}
+		file := ownedInfo{mode: 0o640, uid: tc.fileUID}
+		if got := trustedToInherit(dir, file, euid); got != tc.trusted {
+			t.Errorf("%s: trusted = %v, want %v", tc.name, got, tc.trusted)
+		}
 	}
 }

@@ -18,14 +18,18 @@
 package receive
 
 import (
-	"os/signal"
+	"os"
 	"syscall"
 )
 
-// ignoreHangup keeps a dropped SSH connection from killing the receiver in the
-// middle of an installation. Once a request is read the receiver finishes it,
-// including the hooks that restart a service its before hook stopped, and
-// reports to a connection that may be gone.
-func ignoreHangup() {
-	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
+// holdSignals keeps a dropped SSH connection, or a request to stop, from
+// killing the receiver in the middle of an installation: once a request is
+// read the receiver finishes or rolls it back, including the hooks that
+// restart a service its before hook stopped. The signals are caught rather
+// than ignored, so hooks still start with the default dispositions, and a
+// write to a closed connection fails instead of killing the receiver. Only
+// SIGKILL or a power loss can still interrupt it. The returned function
+// restores the default behavior.
+func holdSignals() (release func()) {
+	return catchSignals(os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGPIPE)
 }

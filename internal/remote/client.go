@@ -25,10 +25,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/deploy"
@@ -38,10 +41,16 @@ import (
 // maxCaptureBytes bounds how much ssh output is kept per call.
 const maxCaptureBytes = 1 << 20
 
+// maxRemoteText bounds one line of text reported by a remote host.
+const maxRemoteText = 2048
+
 // Client runs deploy requests on remote hosts.
 type Client struct {
 	// SSH is the ssh program. Empty means "ssh" found on PATH.
 	SSH string
+	// HookOutput receives the output of remote hooks, one line at a time,
+	// prefixed with the host name. Nil means os.Stderr.
+	HookOutput io.Writer
 }
 
 var _ deploy.Remote = (*Client)(nil)
@@ -56,25 +65,51 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
-// Apply sends req to host. With dryRun the receiver stages and discards it.
-// Hook output and warnings the receiver produced are written to out, one line
-// at a time, prefixed with the host name.
-func (c *Client) Apply(host *config.Host, req deploy.Request, dryRun bool, out io.Writer) (deploy.Result, error) {
-	op := receive.OpApply
-	if dryRun {
-		op = receive.OpCheck
-	}
+// Apply installs req on host. Warnings are written to out and hook output to
+// HookOutput, both prefixed with the host name. When the files were installed
+// but the after hook failed, the result lists the changed kinds alongside the
+// error.
+func (c *Client) Apply(host *config.Host, req deploy.Request, out io.Writer) (deploy.Result, error) {
+	return c.apply(host, req, receive.OpApply, out)
+}
+
+// Check stages req on host and discards it: nothing is installed and no hook
+// runs, but every permission the apply needs is exercised. The result lists
+// the kinds an apply would change. Warnings are written to out.
+func (c *Client) Check(host *config.Host, req deploy.Request, out io.Writer) (deploy.Result, error) {
+	return c.apply(host, req, receive.OpCheck, out)
+}
+
+func (c *Client) apply(host *config.Host, req deploy.Request, op string, out io.Writer) (deploy.Result, error) {
 	resp, stderr, err := c.call(host, receive.Envelope{Protocol: receive.ProtocolVersion, Op: op, Request: &req})
 	if err != nil {
 		return deploy.Result{}, err
 	}
+	hookOut := c.HookOutput
+	if hookOut == nil {
+		hookOut = os.Stderr
+	}
+	writePrefixed(hookOut, host.Name, stderr)
 	if out != nil {
-		writePrefixed(out, host.Name, stderr)
+		writePrefixed(out, host.Name, strings.Join(resp.Warnings, "\n"))
 	}
+	res := deploy.Result{Target: req.Target, Host: host.Name, Changed: requestedKinds(req, resp.Changed)}
 	if !resp.OK {
-		return deploy.Result{}, responseError(host, resp)
+		return res, responseError(host, resp)
 	}
-	return deploy.Result{Target: req.Target, Host: host.Name, Changed: resp.Changed}, nil
+	return res, nil
+}
+
+// requestedKinds returns the kinds in changed that req installs, so a
+// receiver cannot report anything else.
+func requestedKinds(req deploy.Request, changed []string) []string {
+	var kinds []string
+	for _, k := range changed {
+		if slices.ContainsFunc(req.Files, func(f deploy.File) bool { return f.Kind == k }) && !slices.Contains(kinds, k) {
+			kinds = append(kinds, k)
+		}
+	}
+	return kinds
 }
 
 // Hello asks the receiver on host to identify itself, which proves that the
@@ -90,14 +125,41 @@ func (c *Client) Hello(host *config.Host) (*receive.Hello, error) {
 	if resp.Hello == nil {
 		return nil, fmt.Errorf("host %q: receiver sent no identity", host.Name)
 	}
-	return resp.Hello, nil
+	h := *resp.Hello
+	h.Version, h.OS, h.Arch, h.User = cleanRemote(h.Version), cleanRemote(h.OS), cleanRemote(h.Arch), cleanRemote(h.User)
+	return &h, nil
 }
 
 func responseError(host *config.Host, resp *receive.Response) error {
 	if resp.Error == nil {
 		return &Error{Host: host.Name, Code: receive.CodeFailed, Message: "receiver reported failure without a reason"}
 	}
-	return &Error{Host: host.Name, Code: resp.Error.Code, Message: resp.Error.Message}
+	return &Error{Host: host.Name, Code: cleanRemote(resp.Error.Code), Message: cleanRemote(resp.Error.Message)}
+}
+
+// cleanRemote makes text reported by a remote host safe to print and store:
+// line breaks become "; ", other control and bidirectional formatting
+// characters are dropped, trailing space is trimmed, and the length is capped,
+// so a host cannot move the cursor, rewrite the terminal, or forge log lines.
+func cleanRemote(s string) string {
+	s = strings.TrimRightFunc(strings.ToValidUTF8(s, "\uFFFD"), unicode.IsSpace)
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= maxRemoteText {
+			b.WriteString("...")
+			break
+		}
+		switch {
+		case r == '\n':
+			b.WriteString("; ")
+		case r == '\t':
+			b.WriteRune(r)
+		case unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r):
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // call runs one receiver round trip. It returns a nil error only when the
@@ -225,7 +287,7 @@ func unreachable(host *config.Host, runErr error, stderr string) error {
 func lastLines(s string, n int) string {
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
+		if line = strings.TrimSpace(cleanRemote(line)); line != "" {
 			lines = append(lines, line)
 		}
 	}
@@ -235,10 +297,10 @@ func lastLines(s string, n int) string {
 	return strings.Join(lines, "; ")
 }
 
-// writePrefixed copies text to w, prefixing every line with "name: ".
+// writePrefixed copies remote text to w, prefixing every line with "name: ".
 func writePrefixed(w io.Writer, name, text string) {
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		if line != "" {
+	for _, line := range strings.Split(text, "\n") {
+		if line = cleanRemote(line); line != "" {
 			fmt.Fprintf(w, "%s: %s\n", name, line)
 		}
 	}

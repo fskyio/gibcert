@@ -483,6 +483,9 @@ func validateTLSA(cert *Certificate, providers map[string]*Provider) error {
 			return fmt.Errorf("tlsa: name %q: wildcard names are not valid TLSA owner names", name)
 		}
 	}
+	if len(t.Names) == 0 && len(cert.Names) != 0 && !slices.ContainsFunc(cert.Names, func(name string) bool { return !IsIPName(name) }) {
+		return fmt.Errorf("tlsa: certificate has only IP address names, which cannot own TLSA records; set tlsa names or remove the tlsa block")
+	}
 	if t.Usage == 0 && t.Selector == 0 && t.MatchingType == 0 {
 		t.Usage = 3
 		t.Selector = 1

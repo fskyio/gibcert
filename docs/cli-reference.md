@@ -42,16 +42,18 @@ Show what `apply` would change. The plan can include:
 - Certificate issuance, renewal, signing, or resigning.
 - Deploy file creation, update, mode change, owner change, or group change.
 - Deploy hooks that would run.
-- TLSA record reconciliation when the published owners differ from the configured `tlsa` names and ports, or a current certificate has no published records yet.
+- TLSA record reconciliation when published owners differ from the configured `tlsa` names and ports, no records were published yet, or no published record covers the stored key.
 - Orphan certificate state that exists locally but is no longer configured.
+
+`plan` works offline and does not connect to remote hosts. Remote targets are planned from gibcert's deploy records: nothing is shown for a host that holds the current material, `deploy CERT/TARGET@HOST: retry (... last attempt failed: ERROR)` for a target whose last attempt failed, `update (KIND update, ...)` plus hook lines when content is owed, and `update (KIND chmod MODE / chown USER / chgrp GROUP)` without hook lines for attribute-only changes. Files changed on a remote host outside gibcert are not detected; use `gibcert deploy` to repair them.
 
 ### `gibcert apply [--yes]`
 
 Reconcile local state and deployed files with the config.
 
-`apply` computes and prints a plan, asks for confirmation when ACME account, certificate, or TLSA record actions are required, issues or renews due certificates, reconciles TLSA records whose published owners differ from the configuration, then deploys all configured certificate material.
+`apply` computes and prints a plan, asks for confirmation when ACME account, certificate, or TLSA record actions are required, issues or renews due certificates, reconciles TLSA records (see `renew`), then deploys all configured certificate material.
 
-When a plan is nonempty, `apply` still reconciles every configured certificate; a failed renewal does not prevent unrelated certificates from being processed. It reports deploy targets only when their file content changed; unchanged targets are not listed.
+When a plan is nonempty, `apply` still reconciles every configured certificate; a failed renewal does not prevent unrelated certificates from being processed. It reports deploy targets only when their file content changed; unchanged targets are not listed. A failed deploy of a required certificate skips its dependents. `apply` applies remote mode, owner, and group changes and contacts a remote host only when its deploy records show something owed (see `renew`).
 
 | Flag | Description |
 | --- | --- |
@@ -71,11 +73,15 @@ For ACME certificates, this creates an ACME order and completes the configured c
 
 Renew due certificates and reconcile all configured deploy targets.
 
-A certificate is due when it is missing, unreadable, expired, inside its renewal window, has different configured SANs, or has a known issuer identity no longer accepted by the configuration. A configured local CA that is not ready also makes it due. `plan`, `apply`, `renew`, `list`, and `show` share this decision. SAN comparison ignores order, DNS case, and equivalent IP spellings but treats wildcards exactly. Issuer comparison includes account, CA, issuer type, and ACME directory; a still-configured failover issuer is accepted. Imported certificates and incomplete legacy metadata do not establish issuer ownership. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
+A certificate is due when it is missing, unreadable, expired, inside its renewal window, has different configured names, or has a known issuer identity no longer accepted by the configuration. A configured local CA that is not ready also makes it due. `plan`, `apply`, `renew`, `list`, and `show` share this decision. Names are compared as sets with those recorded as requested for the stored leaf, ignoring order, DNS case, and equivalent IP spellings but treating wildcards exactly; the leaf must list every configured name, and extra SANs added by the CA are ignored. Without a matching issuance record, the actual SAN set must equal the configured names. Issuer comparison includes account, CA, issuer type, and ACME directory; a still-configured failover issuer is accepted. Imported certificates and incomplete legacy metadata do not establish issuer ownership. If `renew.before-expiry` is unset, the renewal window is one third of the current certificate lifetime, capped at 30 days.
 
 Deployment reconciliation also runs for otherwise-current certificates: missing or drifted files and pending per-target success hooks are retried from valid canonical material without reissuance or ACME jitter. The existing metadata, mode, and ownership rules apply. Content changes trigger the usual coalesced reloads; an unchanged target does not reload.
 
-TLSA reconciliation likewise runs for otherwise-current certificates with a `tlsa` block when the published owners differ from the configured `names` and ports, or when no records were published yet. Records are republished from canonical material and records under owners that are no longer configured are removed; key rotation still waits for renewal.
+TLSA reconciliation likewise runs for otherwise-current certificates with a `tlsa` block when the published owners differ from the configured `names` and ports, when no records were published yet, or when no published record covers the stored key (`stored key TLSA not published`). Records are republished from canonical material and records under owners that are no longer configured are removed; key rotation still waits for renewal. A failed reconciliation is reported (exit status `1`), but the stored material is still deployed unless TLSA records were published and none covers the stored key; then the deploy is held back until TLSA publication succeeds.
+
+A remote host is contacted only when its deploy records show something owed: a recorded failure for that target and host, files not recorded as installed with the current content, or a changed `owner`, `group`, or `mode`. A host that already holds the current material is not contacted and may be offline. A host with a recorded failure is retried on every run until an attempt succeeds; `renew` exits `1` meanwhile. Remote hook output is always printed to stderr with a `HOST: ` prefix, also without `--verbose`; remote warnings follow the local rules.
+
+For `requires`, a certificate that was not due and only failed its deploy or TLSA reconciliation still counts as satisfied, so its dependents proceed; the error is reported and `renew` exits `1`. A certificate that was due and failed issuance or its deploy still holds back its dependents. When `renew` stops early because the state lock could not be acquired, it still runs reload commands already queued for certificates deployed earlier in that run.
 
 | Flag | Description |
 | --- | --- |
@@ -141,13 +147,13 @@ Deploy stored canonical certificate material for one configured certificate to i
 
 Remote results are printed as `target@host`, for example `  nginx@web1: updated [fullchain key]` or `  nginx@web1: up to date`. Each remote host is independent: a failure on one host does not stop the others, and all failures are reported at the end with a non-zero exit status. Results of the hosts and targets that succeeded are still reported.
 
-This command does not issue or renew the certificate.
+This command does not issue or renew the certificate. It always contacts every selected remote host, regardless of deploy records, so it repairs files changed on the host.
 
 ### `gibcert host test [NAME...]`
 
 Check remote deploy hosts. With no names, every configured `host` block is tested; an unknown name is a usage error (status `2`).
 
-For each host, gibcert connects over SSH and prints one line with the result and, on success, the login user, address, remote gibcert version, and uid. It then does a dry-run installation of every deploy target that installs on that host, using the stored material of the certificate. The dry run stages and discards the files on the host, exercising directory writes, mode, ownership, and reading of existing files. A certificate that has not been issued yet is tested with placeholder material, which checks permissions only.
+For each host, gibcert connects over SSH and prints one line with the result and, on success, the login user, address, remote gibcert version, and uid. It then does a dry-run installation of every deploy target that installs on that host, using the stored material of the certificate. The dry run creates no directories, writes no material, and runs no hooks: it reads the existing destination files and probes permissions by creating and removing an empty `.gibcert-probe-*` file with the target owner, group, and mode in the destination directory or its nearest existing parent. The stored material, including the private key, is still sent to the host over SSH for the comparison. A certificate that has not been issued yet is tested with placeholder material, which checks permissions only.
 
 Each target is reported as `CERT/TARGET: ok` or `CERT/TARGET: FAIL` with the reason. For permission failures gibcert also prints an example setup for an unprivileged deploy user and a pointer to [Remote deploy](remote-deploy.md).
 
@@ -221,6 +227,7 @@ Deploy statuses are:
 - `stale`: configured deploy files differ from canonical stored material.
 - `partial`: configured deploy files have mixed statuses.
 - `error`: at least one configured deploy path could not be read.
+- `failed`: the last deploy attempt to a remote host failed; `show` prints `FAILED since TIME: ERROR` for that target.
 - `-`: no deploy target, or no canonical material is available yet.
 
 ### `gibcert show <certificate>`

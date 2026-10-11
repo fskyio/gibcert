@@ -179,9 +179,10 @@ type TLSAPort struct {
 
 // TLSAOwners returns the owner names, with trailing dots, under which TLSA
 // records are published for c: one per (port, name) pair over the tlsa names,
-// or over the certificate names when none are configured. Wildcard prefixes
-// are stripped, names are lowercased, and duplicates are dropped, so equal
-// owners compare equal as strings. It returns nil when c has no tlsa block.
+// or over the certificate's DNS names when none are configured (IP address
+// names cannot own TLSA records and are skipped). Wildcard prefixes are
+// stripped, names are lowercased, and duplicates are dropped, so equal owners
+// compare equal as strings. It returns nil when c has no tlsa block.
 func (c *Certificate) TLSAOwners() []string {
 	if c.TLSA == nil {
 		return nil
@@ -193,6 +194,9 @@ func (c *Certificate) TLSAOwners() []string {
 	seen := map[string]bool{}
 	var owners []string
 	for _, name := range names {
+		if IsIPName(name) {
+			continue
+		}
 		base := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(name, "*."), "."))
 		for _, p := range c.TLSA.Ports {
 			owner := fmt.Sprintf("_%d._%s.%s.", p.Port, strings.ToLower(p.Protocol), base)

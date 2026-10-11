@@ -30,15 +30,19 @@ import (
 )
 
 type fakeRemote struct {
-	fail  map[string]error
-	calls []string
-	reqs  []Request
+	fail    map[string]error
+	partial bool
+	calls   []string
+	reqs    []Request
 }
 
-func (f *fakeRemote) Apply(h *config.Host, req Request, dryRun bool, out io.Writer) (Result, error) {
+func (f *fakeRemote) Apply(h *config.Host, req Request, out io.Writer) (Result, error) {
 	f.calls = append(f.calls, h.Name)
 	f.reqs = append(f.reqs, req)
 	if err := f.fail[h.Name]; err != nil {
+		if f.partial {
+			return Result{Changed: []string{"fullchain"}}, err
+		}
 		return Result{}, err
 	}
 	return Result{Target: req.Target, Host: h.Name, Changed: []string{"fullchain"}}, nil
@@ -102,31 +106,101 @@ func TestDeployKeepsGoingAfterRemoteFailureAndRetriesOnlyThatHost(t *testing.T) 
 	}
 	firstFailure := meta.DeployFailures[0].Since
 
-	// The next run: web1 and web3 are known to be current, web2 still is not,
-	// and the hook obligation travels with the request to web2 only.
+	// The next run: web1 and web3 are recorded as current and are not
+	// contacted; web2 is retried and the hook obligation travels with it.
 	remote.calls, remote.reqs = nil, nil
 	time.Sleep(time.Millisecond)
-	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1", "web2", "web3"))); err == nil {
+	results, err = Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1", "web2", "web3")))
+	if err == nil {
 		t.Fatal("retry succeeded while web2 still fails")
 	}
-	for i, req := range remote.reqs {
-		wantUnseen := remote.calls[i] == "web2"
-		if got := len(req.Unseen) != 0; got != wantUnseen {
-			t.Errorf("%s: unseen = %v, want unseen kinds %v", remote.calls[i], req.Unseen, wantUnseen)
-		}
+	if !slices.Equal(remote.calls, []string{"web2"}) || len(remote.reqs[0].Unseen) == 0 {
+		t.Fatalf("calls = %v, reqs = %+v; want only web2, with unseen kinds", remote.calls, remote.reqs)
+	}
+	if len(results) != 2 || len(results[0].Changed) != 0 || results[1].Label() != "web@web3" {
+		t.Fatalf("results = %+v, want web1 and web3 reported up to date", results)
 	}
 	meta, _ = store.LoadCertMeta("example.com")
 	if !meta.DeployFailures[0].Since.Equal(firstFailure) || !meta.DeployFailures[0].At.After(firstFailure) {
 		t.Fatalf("failure streak = %+v, want Since kept at %v and At advanced", meta.DeployFailures[0], firstFailure)
 	}
 
-	remote.fail = nil
+	remote.fail, remote.calls = nil, nil
 	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1", "web2", "web3"))); err != nil {
 		t.Fatalf("Deploy after recovery: %v", err)
 	}
 	meta, _ = store.LoadCertMeta("example.com")
-	if len(meta.DeployFailures) != 0 {
-		t.Fatalf("failures = %+v, want cleared after success", meta.DeployFailures)
+	if len(meta.DeployFailures) != 0 || !slices.Equal(remote.calls, []string{"web2"}) {
+		t.Fatalf("failures = %+v, calls = %v; want web2 alone retried and cleared", meta.DeployFailures, remote.calls)
+	}
+
+	// Nothing is owed anywhere: an unreachable host is not even contacted.
+	remote.fail, remote.calls = map[string]error{"web1": errors.New("down")}, nil
+	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1", "web2", "web3"))); err != nil || len(remote.calls) != 0 {
+		t.Fatalf("Deploy with current records = %v, calls %v; want no contact", err, remote.calls)
+	}
+	// An explicit recheck contacts every host and reports the failure.
+	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1", "web2", "web3")), RecheckRemote()); err == nil ||
+		!slices.Equal(remote.calls, []string{"web1", "web2", "web3"}) {
+		t.Fatalf("recheck = %v, calls %v; want every host contacted and web1 failing", err, remote.calls)
+	}
+}
+
+func TestDeployContactsHostWhenRequestedAttributesChange(t *testing.T) {
+	root := t.TempDir()
+	store := storage.New(filepath.Join(root, "state"))
+	writeCanonical(t, store, "example.com")
+	cert := remoteCert(root, "web1")
+	remote := &fakeRemote{}
+	hosts := hostsNamed("web1")
+	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hosts)); err != nil {
+		t.Fatal(err)
+	}
+	mode := os.FileMode(0o640)
+	for _, change := range []func(d *config.Deploy){
+		func(d *config.Deploy) { d.Mode = &mode },
+		func(d *config.Deploy) { d.Group = "ssl-cert" },
+		func(d *config.Deploy) { d.Owner = "www" },
+	} {
+		change(cert.Deploys[0])
+		remote.calls, remote.reqs = nil, nil
+		if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hosts)); err != nil {
+			t.Fatal(err)
+		}
+		if len(remote.calls) != 1 || len(remote.reqs[0].Unseen) != 0 {
+			t.Fatalf("calls %v, reqs %+v; want one contact without hook obligation", remote.calls, remote.reqs)
+		}
+	}
+	// Leaving an attribute unmanaged changes nothing on the host.
+	cert.Deploys[0].Owner, cert.Deploys[0].Mode = "", nil
+	remote.calls = nil
+	if _, err := Deploy(cert, store, io.Discard, WithRemote(remote, hosts)); err != nil || len(remote.calls) != 0 {
+		t.Fatalf("Deploy = %v, calls %v; want no contact", err, remote.calls)
+	}
+}
+
+func TestDeployReportsPartialRemoteInstall(t *testing.T) {
+	root := t.TempDir()
+	store := storage.New(filepath.Join(root, "state"))
+	writeCanonical(t, store, "example.com")
+	remote := &fakeRemote{fail: map[string]error{"web1": errors.New("after hook: exit status 1")}, partial: true}
+	results, err := Deploy(remoteCert(root, "web1"), store, io.Discard, WithRemote(remote, hostsNamed("web1")))
+	if err == nil || len(results) != 1 || results[0].Label() != "web@web1" || len(results[0].Changed) == 0 {
+		t.Fatalf("results = %+v, err = %v; want the installed kinds with the error", results, err)
+	}
+}
+
+func TestDeployStopKeepsEarlierRemoteFailures(t *testing.T) {
+	root := t.TempDir()
+	store := storage.New(filepath.Join(root, "state"))
+	writeCanonical(t, store, "example.com")
+	cert := remoteCert(root, "web1")
+	// The local destination is a directory, so the local install fails.
+	cert.Deploys = append(cert.Deploys, &config.Deploy{Name: "local", Fullchain: t.TempDir()})
+	remote := &fakeRemote{fail: map[string]error{"web1": errors.New("connect timed out")}}
+	_, err := Deploy(cert, store, io.Discard, WithRemote(remote, hostsNamed("web1")))
+	if err == nil || !strings.Contains(err.Error(), "connect timed out") || !strings.Contains(err.Error(), `deploy "local"`) {
+		t.Fatalf("err = %v, want both the remote and the local failure", err)
 	}
 }
 

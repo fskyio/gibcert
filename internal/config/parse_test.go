@@ -213,18 +213,40 @@ certificate example.com {
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "wildcard") {
 		t.Errorf("Validate of wildcard tlsa name got %v, want wildcard rejection", err)
 	}
+
+	// Without tlsa names, owners come from the DNS certificate names; IP
+	// address names are skipped, so IP-only certificates have no owner. IP
+	// identifiers need http-01, so swap the challenge.
+	defaultNames := strings.Replace(src, "    names mail.example.com smtp.example.com\n", "", 1)
+	defaultNames = strings.Replace(defaultNames, "challenge dns-01 {\n    provider dynamic-dns\n  }", "challenge http-01 {\n    webroot /var/www/acme\n  }", 1)
+	mixed := strings.Replace(defaultNames, "names example.com www.example.com", "names example.com 192.0.2.10", 1)
+	cfg, err = Read(strings.NewReader(mixed))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate of mixed DNS and IP names: %v", err)
+	}
+	ipOnly := strings.Replace(defaultNames, "names example.com www.example.com", "names 192.0.2.10", 1)
+	cfg, err = Read(strings.NewReader(ipOnly))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "set tlsa names or remove the tlsa block") {
+		t.Errorf("Validate of IP-only names with default tlsa owners got %v, want owner rejection", err)
+	}
 }
 
 func TestCertificateTLSAOwners(t *testing.T) {
 	cert := &Certificate{
-		Names: []string{"*.example.com", "Example.com"},
+		Names: []string{"*.example.com", "Example.com", "192.0.2.10", "2001:db8::1"},
 		TLSA: &TLSASpec{Ports: []TLSAPort{
 			{Port: 25, Protocol: "tcp"},
 			{Port: 853, Protocol: "UDP"},
 		}},
 	}
 	// Certificate names: the wildcard and differently cased apex collapse to
-	// one owner per port.
+	// one owner per port, and IP address names own no records.
 	if got, want := cert.TLSAOwners(), []string{"_25._tcp.example.com.", "_853._udp.example.com."}; !equalSlices(got, want) {
 		t.Errorf("default owners: got %v, want %v", got, want)
 	}

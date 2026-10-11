@@ -21,6 +21,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -48,18 +49,17 @@ func (r Result) Label() string {
 	return r.Target + "@" + r.Host
 }
 
-// Remote applies a Request on another machine. With dryRun it stages and
-// checks everything the apply would do, without installing files or running
-// hooks, and reports which kinds would change. Hook output and warnings are
-// written to out.
+// Remote applies a Request on another machine. Hook output goes wherever the
+// implementation sends it; warnings are written to out.
 type Remote interface {
-	Apply(host *config.Host, req Request, dryRun bool, out io.Writer) (Result, error)
+	Apply(host *config.Host, req Request, out io.Writer) (Result, error)
 }
 
 type options struct {
-	remote Remote
-	hosts  map[string]*config.Host
-	only   string
+	remote  Remote
+	hosts   map[string]*config.Host
+	only    string
+	recheck bool
 }
 
 // Option adjusts how Deploy treats deploy targets that name remote hosts.
@@ -83,6 +83,13 @@ func OnlyHost(name string) Option {
 	return func(o *options) { o.only = name }
 }
 
+// RecheckRemote makes Deploy contact every selected remote host, including
+// those whose records show the current request installed, so drift on the
+// host is repaired. Without it, such hosts are skipped.
+func RecheckRemote() Option {
+	return func(o *options) { o.recheck = true }
+}
+
 // Hosts returns the hosts a deploy target installs on; an empty name stands
 // for this machine.
 func Hosts(d *config.Deploy) []string {
@@ -93,9 +100,12 @@ func Hosts(d *config.Deploy) []string {
 }
 
 // Deploy installs the stored material of cert on every deploy target. Targets
-// without hosts install in-process and stop at the first failure. A failure on
-// a remote host is recorded in the certificate metadata and the remaining
-// hosts are still attempted; all remote failures are returned together.
+// without hosts install in-process and stop at the first failure. A remote
+// host whose records show the request installed, with no failure since, is
+// skipped unless RecheckRemote is given. A failure on a remote host is
+// recorded in the certificate metadata and the remaining hosts are still
+// attempted; all failures are returned together. A target whose files were
+// installed before its after hook failed is included in the results.
 func Deploy(cert *config.Certificate, store *storage.Store, out io.Writer, opts ...Option) ([]Result, error) {
 	var o options
 	for _, opt := range opts {
@@ -119,6 +129,10 @@ func Deploy(cert *config.Certificate, store *storage.Store, out io.Writer, opts 
 
 	var results []Result
 	var remoteErrs []error
+	// stop ends the run, keeping the remote failures collected so far.
+	stop := func(err error) ([]Result, error) {
+		return results, errors.Join(append(remoteErrs, err)...)
+	}
 	meta, err := store.LoadCertMeta(cert.Name)
 	if errors.Is(err, os.ErrNotExist) {
 		meta = &storage.CertMeta{Name: cert.Name}
@@ -128,33 +142,46 @@ func Deploy(cert *config.Certificate, store *storage.Store, out io.Writer, opts 
 	for _, d := range cert.Deploys {
 		req, err := NewRequest(cert.Name, d, material)
 		if err != nil {
-			return results, fmt.Errorf("deploy %q: stage: %w", d.Name, err)
+			return stop(fmt.Errorf("deploy %q: stage: %w", d.Name, err))
 		}
 		for _, host := range Hosts(d) {
 			if o.only != "" && host != o.only {
 				continue
 			}
-			req.Unseen = UnseenKinds(meta, req, host)
 			if host == "" {
+				req.Unseen = UnseenKinds(meta, req, host)
 				r, err := Apply(req, ApplyOptions{Out: out})
 				if err != nil {
-					return results, fmt.Errorf("deploy %q: %w", d.Name, err)
+					if len(r.Changed) > 0 {
+						results = append(results, r)
+					}
+					return stop(fmt.Errorf("deploy %q: %w", d.Name, err))
 				}
 				results = append(results, r)
 				upsertDeployRecords(meta, req.Records("", timeNow()))
 				if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
-					return results, fmt.Errorf("deploy %q: save metadata: %w", d.Name, err)
+					return stop(fmt.Errorf("deploy %q: save metadata: %w", d.Name, err))
 				}
 				continue
 			}
 
 			h, ok := o.hosts[host]
 			if o.remote == nil || !ok {
-				return results, fmt.Errorf("deploy %q: host %q is not available for remote deploy", d.Name, host)
+				return stop(fmt.Errorf("deploy %q: host %q is not available for remote deploy", d.Name, host))
 			}
-			r, err := o.remote.Apply(h, req, false, out)
+			recorded := RecordedOnHost(meta, req, host)
+			if !o.recheck && recorded.Current() {
+				results = append(results, Result{Target: d.Name, Host: host})
+				continue
+			}
+			req.Unseen = recorded.Unseen
+			r, err := o.remote.Apply(h, req, out)
+			r.Target, r.Host = d.Name, host
 			now := timeNow()
 			if err != nil {
+				if len(r.Changed) > 0 {
+					results = append(results, r)
+				}
 				err = fmt.Errorf("deploy %q on host %q: %w", d.Name, host, err)
 				remoteErrs = append(remoteErrs, err)
 				noteFailure(meta, d.Name, host, err, now)
@@ -163,7 +190,6 @@ func Deploy(cert *config.Certificate, store *storage.Store, out io.Writer, opts 
 				}
 				continue
 			}
-			r.Target, r.Host = d.Name, host
 			results = append(results, r)
 			clearFailure(meta, d.Name, host)
 			upsertDeployRecords(meta, req.Records(host, now))
@@ -203,8 +229,9 @@ type ApplyOptions struct {
 	// redirect both.
 	HookStdout io.Writer
 	HookStderr io.Writer
-	// DryRun stages and discards everything without installing files or
-	// running hooks.
+	// DryRun reads the destinations and reports which kinds would change,
+	// probing permissions with an empty file but creating no directories,
+	// writing no material, installing nothing, and running no hooks.
 	DryRun bool
 	// RefuseSymlinks makes a destination that is a symbolic link an error
 	// instead of being replaced.
@@ -228,7 +255,7 @@ func Apply(req Request, opts ApplyOptions) (Result, error) {
 	if err := req.Validate(); err != nil {
 		return Result{}, err
 	}
-	staged := stagedDeploy{refuseSymlinks: opts.RefuseSymlinks}
+	staged := stagedDeploy{refuseSymlinks: opts.RefuseSymlinks, dryRun: opts.DryRun}
 	defer staged.cleanup()
 	if err := staged.prepare(req, opts.Out); err != nil {
 		return Result{}, fmt.Errorf("stage: %w", err)
@@ -259,7 +286,9 @@ func Apply(req Request, opts ApplyOptions) (Result, error) {
 	}
 	hookChanged := hookChangedKinds(staged.result.Changed, req.Unseen)
 	if err := runHook(req.After, "after-deploy", req, Result{Target: req.Target, Changed: hookChanged}, opts); err != nil {
-		return Result{}, fmt.Errorf("after hook: %w", err)
+		// The files are installed: report them so callers still treat the
+		// material as changed.
+		return staged.result, fmt.Errorf("after hook: %w", err)
 	}
 	return staged.result, nil
 }
@@ -334,8 +363,10 @@ func deployRecordCurrent(meta *storage.CertMeta, rec storage.CertDeployMeta) boo
 	return false
 }
 
-// DesiredMode preserves public-file modes but never inherits group or other
-// access for private keys. Group access requires an explicit deploy mode.
+// DesiredMode is the mode a deployed file gets: the explicit deploy mode, else
+// the mode of the file it replaces, else the default. An inherited private-key
+// mode loses the other-access and execute bits that an explicit private-key
+// mode must not have; group access is kept.
 func DesiredMode(defaultMode fs.FileMode, existing os.FileInfo, d *config.Deploy) (fs.FileMode, error) {
 	return desiredMode(defaultMode, existing, d.Mode)
 }
@@ -353,10 +384,15 @@ func desiredMode(defaultMode fs.FileMode, existing os.FileInfo, explicit *fs.Fil
 	}
 	mode := existing.Mode().Perm()
 	if defaultMode == 0o600 {
-		mode &= 0o600
+		mode &^= 0o117
 	}
 	return mode, nil
 }
+
+// hookWaitDelay bounds how long Apply waits for a hook's output once the hook
+// has exited, so a background process it started that still holds a pipe to
+// a non-file writer cannot block the deploy.
+var hookWaitDelay = 5 * time.Second
 
 func runHook(command, event string, req Request, r Result, opts ApplyOptions) error {
 	if command == "" || len(r.Changed) == 0 {
@@ -379,7 +415,13 @@ func runHook(command, event string, req Request, r Result, opts ApplyOptions) er
 	cmd.Env = env
 	cmd.Stdout = opts.HookStdout
 	cmd.Stderr = opts.HookStderr
-	return cmd.Run()
+	cmd.WaitDelay = hookWaitDelay
+	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		fmt.Fprintf(opts.Out, "warning: %s hook exited but left a background process holding its output; further output is discarded\n", event)
+		return nil
+	}
+	return err
 }
 
 // RunReload executes a once-per-run reload command. Unlike a per-deploy "after"

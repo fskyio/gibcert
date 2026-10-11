@@ -541,10 +541,12 @@ certificate bundle.example.com {
 Dependencies apply to the whole-config reconcilers `gibcert apply` and `gibcert
 renew`, which process certificates in dependency order. They do not pull
 dependencies into single-certificate commands such as `gibcert issue <name>`. In
-`renew`, only certificates that are actually due are processed; a required
-certificate that is already valid (and therefore not renewed this run) counts as
-satisfied. Gating only triggers when a required certificate is processed and
-fails this run.
+`renew`, a required certificate that was not due counts as satisfied even if its
+deploy or TLSA reconciliation fails this run (the error is reported and `renew`
+exits 1); a required certificate that was due and fails issuance or its deploy
+gates its dependents. In `apply`, a failed deploy of a required certificate
+skips its dependents; a TLSA reconcile failure gates them only when it holds the
+deploy back (see [`tlsa`](#tlsa)).
 
 Each name must reference another certificate. A certificate cannot depend on
 itself, list the same name twice, or list a name in both `requires` and `wants`,
@@ -699,7 +701,7 @@ Directives:
 
 The default renewal window is based on the stored leaf certificate's actual `notBefore` and `notAfter` values, so short-lived ACME profiles automatically renew on a shorter cadence. Set `before-expiry` to use an exact fixed window instead.
 
-The renewal window does not delay configuration changes: added or removed SANs and a changed known issuer identity make a stored leaf due immediately. Names are compared as sets against the actual leaf SANs, with DNS case and IP spellings normalized; wildcards must match exactly. Known issuer identity includes type, account, CA, and directory. A configured failover issuer is also accepted, preventing repeated replacement after successful failover issuance. Imported certificates and incomplete legacy metadata are not assumed to belong to the configured issuer; their SANs and validity are still checked. A configured local CA that is missing or unready also makes its certificate due. These rules are shared by `plan`, `apply`, `renew`, `list`, and `show`.
+The renewal window does not delay configuration changes: added or removed SANs and a changed known issuer identity make a stored leaf due immediately. Configured names are compared as sets with the names recorded as requested when the stored leaf was issued (order, DNS case, and IP spellings are ignored; wildcards must match exactly), and the leaf must list each configured name; SANs the CA added on its own are ignored. Without such a record (imported certificates record their actual SANs; missing or stale metadata), the leaf's SAN set must equal the configured names. Known issuer identity includes type, account, CA, and directory. A configured failover issuer is also accepted, preventing repeated replacement after successful failover issuance; records written by v0.1.0 or v0.2.0 that name the primary account with a configured failover's CA and directory are accepted as that failover. Imported certificates and incomplete legacy metadata are not assumed to belong to the configured issuer; their SANs and validity are still checked. A configured local CA that is missing or unready also makes its certificate due. These rules are shared by `plan`, `apply`, `renew`, `list`, and `show`.
 
 ## `deploy`
 
@@ -732,18 +734,24 @@ Directives:
 | `owner NAME` | Owner to set on deployed files. Requires privileges. |
 | `group NAME` | Group to set on deployed files. Requires privileges. |
 | `mode MODE` | File mode for deployed files, such as `0640`. Must be `0777` or lower. Targets containing a private key must not grant other access or execute permission. |
-| `before COMMAND` | Command to run after all output files and attributes are staged, before replacement. Requires an `after` hook for recovery. Runs through the platform shell. |
-| `after COMMAND` | Command to run after successful replacement, or to recover after a failed `before` hook or a completed rollback. Check `GIBCERT_EVENT`: `after-deploy` or `rollback-deploy`. Runs through the platform shell. |
+| `before COMMAND` | Command to run after all output files and attributes are staged, before replacement. Runs only when at least one file's content changes. Requires an `after` hook for recovery. Runs through the platform shell. |
+| `after COMMAND` | Command to run after successful replacement, or to recover after the `before` hook ran and then failed, or after a completed rollback that followed a `before` hook run. Check `GIBCERT_EVENT`: `after-deploy` or `rollback-deploy`. Runs through the platform shell. |
 
-At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` must be set. All deploy paths must be absolute and must not collide with any other output path in the configuration, including after path normalization. The DER targets emit the same material as `cert` and `key` in binary DER form; `chain`/`fullchain` have no DER form because concatenated DER certificates are not a portable format.
+At least one of `cert`, `chain`, `fullchain`, `key`, `cert-der`, or `key-der` must be set. All deploy paths must be absolute and must not collide with any other output path in the configuration, including after path normalization. Absolute paths start with `/`; this also holds on Windows. The DER targets emit the same material as `cert` and `key` in binary DER form; `chain`/`fullchain` have no DER form because concatenated DER certificates are not a portable format.
 
-By default, new certificate files are created with mode `0644` and new private key files are created with mode `0600`. Existing public-file modes are preserved when `mode` is omitted. Inherited private-key modes are restricted to owner read/write bits, including when content is already current. Set an explicit mode such as `0640` to allow intentional group access; other access and execute permission are rejected for targets containing `key` or `key-der`.
+By default, new certificate files are created with mode `0644` and new private key files are created with mode `0600`. Existing public-file modes are preserved when `mode` is omitted. Without an explicit `mode`, a private key inherits the existing key's mode minus other-access and execute bits, including when content is already current: `0640` and `0660` stay, `0644` and `0750` become `0640`, and gibcert warns when it narrows a mode. An explicit `mode` on a target containing `key` or `key-der` must not grant other access or execute permission; it applies to every file of the target, so put the key in its own target if certificates should be world-readable. On Windows, only the read-only bit of a mode is compared.
 
 On Unix-like systems, replacement files preserve the destination's existing owner and group for any attribute omitted from the deploy block. Explicit `owner` or `group` changes only that attribute. First-time files retain process-created ownership unless overridden.
 
-Each target stages every output, mode, and owner/group before running its `before` hook. Files are then replaced by individual atomic renames. An installation failure rolls back earlier replacements; only a completed rollback runs the `after` recovery hook with `GIBCERT_EVENT=rollback-deploy`. Rollback errors report retained backup paths and do not run recovery against a potentially mixed set. This protects against ordinary errors, not a process crash or a concurrent reader between renames; use stop/start hooks when a service must not read during replacement.
+A private key inherits the existing file's owner, group, and mode only if that file is trusted: its directory is not writable by group or other, and the file is owned by the gibcert process user or by the directory's owner. Otherwise gibcert uses the process owner and group and mode `0600`, and warns; set `owner`, `group`, and `mode` explicitly. The check applies when `mode` is not explicit, or when gibcert runs as root and `owner` or `group` is not explicit. Explicit attributes always win. Directories with ACLs report the ACL mask as group bits.
 
-Only content differences are reported as changes. Ownership and mode are still reconciled when content is already current. Deployment metadata is saved only after the success hook completes. If that hook fails, the complete new file set remains installed and the hook is retried by a later deploy.
+Destinations are opened without following symbolic links and must be regular files. A local destination that is a symbolic link is not read through and nothing is inherited from it: it is replaced by a regular file (default or explicit mode, process ownership) with a warning, and counts as changed even if the link target had identical content. Rollback recreates the link with its original target; on Windows, that needs the privilege to create symbolic links. Remote hosts refuse symbolic-link destinations.
+
+Each target stages every output, mode, and owner/group before running its `before` hook. Files are then replaced by individual atomic renames. Replaced regular files are kept as `.gibcert-backup-*` files, created owner-only (`0600`, gibcert process owner); they get their original attributes back only when rollback restores them. An installation failure rolls back earlier replacements. The `after` recovery hook runs with `GIBCERT_EVENT=rollback-deploy` only if the `before` hook ran (it is configured and at least one file's content changes), and then only when the `before` hook fails or when a rollback completes; `GIBCERT_CHANGED` lists the content-changed kinds. Rollback errors report retained backup paths and do not run recovery against a potentially mixed set. A failing `after` hook after deployment never triggers rollback. This protects against ordinary errors, not a process crash or a concurrent reader between renames; use stop/start hooks when a service must not read during replacement.
+
+Only content differences are reported as changes. Ownership and mode are still reconciled when content is already current. Deployment metadata is saved only after the success hook completes. If that hook fails, the complete new file set remains installed, the target counts as changed (the certificate's `reload` commands run in that run), and the hook is retried by later runs without another reload.
+
+If a hook exits but leaves a background process holding its output, gibcert waits at most 5 seconds, then continues with a warning and discards further output. This matters on remote hosts, where hook output is a pipe.
 
 ### Remote hosts
 
@@ -754,18 +762,21 @@ deploy nginx {
   host web1 web2
   fullchain /etc/nginx/tls/example.com/fullchain.pem
   key /etc/nginx/tls/example.com/privkey.pem
-  owner root
   group ssl-cert
   mode 0640
-  after "systemctl start nginx"
+  after "sudo -n systemctl reload nginx"
 }
 ```
 
+This example assumes an unprivileged login user that can write `/etc/nginx/tls/example.com`, a setgid directory owned by group `ssl-cert`, and a sudoers rule allowing the hook command. An unprivileged user cannot change the owner, so do not set `owner root` for such a login.
+
 - Every named host must be defined by a top-level `host` block.
-- `before` and `after` hooks of a target with `host` run on the remote host as the ssh login user, not on this machine. `reload` hooks always run locally.
+- `before` and `after` hooks of a target with `host` run on the remote host as the ssh login user, not on this machine. `reload` hooks always run locally. Remote hook output is printed to stderr prefixed with `HOST: `.
 - Destination paths must be absolute POSIX-style paths (`/...`). `owner` and `group` are resolved on the remote host.
 - In a `group`, a deploy's `host` list is replaced, not merged, by a certificate `deploy` of the same name that sets `host`.
 - Path collision detection is per host: the same path on two different hosts, or on a host and locally, is not a collision.
+- `renew` and `apply` contact a host only when its deploy records show something owed: a recorded failure, material not recorded as installed, or a changed `owner`, `group`, or `mode`. A host that already holds the current material is not contacted and may be offline. A host with a recorded failure is retried on every run until an attempt succeeds. `plan` never contacts hosts; it plans remote targets from the records.
+- Changes made on the remote host itself are not detected by `renew` or `apply`. `gibcert deploy CERT` always contacts every selected host and repairs such drift.
 
 ## `host`
 
@@ -797,7 +808,7 @@ Directives not set fall back to `ssh` defaults, including `~/.ssh/config`. Host 
 
 ## `tlsa`
 
-Manage DANE TLSA records for the certificate. gibcert publishes one TLSA record per `(port, name)` pair using DANE-EE pinning of the certificate public key, and rotates the key safely across renewals by always keeping a next-renewal key pre-published. Records are published under the certificate's names by default; the `names` directive selects the (sub)domains explicitly.
+Manage DANE TLSA records for the certificate. gibcert publishes one TLSA record per `(port, name)` pair using DANE-EE pinning of the certificate public key, and rotates the key safely across renewals by always keeping a next-renewal key pre-published. Records are published under the certificate's DNS names by default (IP address names are skipped); the `names` directive selects the (sub)domains explicitly. A `tlsa` block without `names` on a certificate whose names are all IP addresses is a configuration error.
 
 ```scfg
 certificate example.com {
@@ -850,9 +861,11 @@ For a certificate with `tlsa { ... }`, gibcert maintains two private keys at all
 - `privkey.pem`: the key in the currently issued certificate.
 - `privkey-next.pem`: a pre-staged key whose TLSA fingerprint is already published in DNS.
 
-On every issuance, gibcert ensures both keys' TLSA records are published at every configured `(port, name)` pair: the certificate's names unless `names` is set. When a renewal is due and the staged next-key's TLSA has been published longer than `ttl`, gibcert issues the new certificate against the staged key, promotes it to `privkey.pem`, generates a new staged next-key, and publishes its TLSA. The retired key's TLSA is removed. Local CA certificates follow the same rotation.
+On every issuance, gibcert ensures both keys' TLSA records are published at every configured `(port, name)` pair: the certificate's DNS names unless `names` is set. When a renewal is due and the staged next-key's TLSA has been published longer than `ttl`, gibcert issues the new certificate against the staged key, promotes it to `privkey.pem`, generates a new staged next-key, and publishes its TLSA. The retired key's TLSA is removed. Local CA certificates follow the same rotation.
 
-Between renewals, `apply` and `renew` compare the owners gibcert last published with the configured `names` and ports. When they differ, or when a current certificate has no published TLSA records yet, gibcert republishes the records from the stored certificate and key and removes records left under owners that are no longer configured. Other `tlsa` changes, such as `ttl` or `type`, take effect at the next issuance or with `gibcert tlsa reconcile <certificate>`.
+Between renewals, `apply` and `renew` compare the owners gibcert last published with the configured `names` and ports. When they differ, when a current certificate has no published TLSA records yet, or when no published record covers the stored key (`stored key TLSA not published`, for example after a key rotation whose TLSA publication failed), gibcert republishes the records from the stored certificate and key and removes records left under owners that are no longer configured. Records left under IP address owners by earlier versions are removed. Other `tlsa` changes, such as `ttl` or `type`, take effect at the next issuance or with `gibcert tlsa reconcile <certificate>`.
+
+If this reconciliation fails, the error is reported and the run exits 1, but the stored material is still deployed, except when TLSA records are published and none covers the stored key: then the deploy is held back (`deploy skipped: the stored key has no published TLSA record`) until TLSA publication succeeds.
 
 On the very first issuance for a TLSA-managed certificate, both records are published before the certificate is written to canonical storage, so DANE clients see the pin once the certificate is deployed.
 

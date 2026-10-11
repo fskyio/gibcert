@@ -39,18 +39,24 @@ func TestReceiveHelper(t *testing.T) {
 }
 
 // useFakeSSH puts an ssh stand-in first on PATH. It behaves like a remote
-// receiver, except that connecting to an address containing "down.example"
-// fails the way an unreachable host does.
+// receiver, except that connecting to an address containing "down.example",
+// or to any host while GIBCERT_TEST_SSH_DOWN is set, fails the way an
+// unreachable host does. Every invocation is logged to GIBCERT_TEST_SSH_LOG
+// when set.
 func useFakeSSH(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
+		"[ -n \"$GIBCERT_TEST_SSH_LOG\" ] && echo \"$*\" >> \"$GIBCERT_TEST_SSH_LOG\"\n" +
+		"[ -n \"$GIBCERT_TEST_SSH_DOWN\" ] && { echo 'ssh: connect to host: Connection timed out' >&2; exit 255; }\n" +
 		"case \"$*\" in *down.example*) echo 'ssh: connect to host down.example: Connection refused' >&2; exit 255;; esac\n" +
 		"exec \"" + os.Args[0] + "\" -test.run=TestReceiveHelper\n"
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GIBCERT_TEST_RECEIVE_HELPER", "1")
+	t.Setenv("GIBCERT_TEST_SSH_DOWN", "")
+	t.Setenv("GIBCERT_TEST_SSH_LOG", "")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -196,6 +202,77 @@ func TestDeployFailureOnOneHostDoesNotStopOthers(t *testing.T) {
 	}
 	if got := deploySummary(cfgCert(t, p, "example.com"), store); got != "failed" {
 		t.Fatalf("deploySummary = %q, want failed", got)
+	}
+}
+
+func TestRemoteHostsAreContactedOnlyWhenSomethingIsOwed(t *testing.T) {
+	dest := t.TempDir()
+	p, store := remoteFixture(t, "web1", dest)
+	cert := cfgCert(t, p, "example.com")
+	if out, errOut, code := captureCommand(t, func() int { return cmdRenew(p, []string{"--no-jitter"}) }); code != 0 {
+		t.Fatalf("renew: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if got := deploySummary(cert, store); got != "ok" {
+		t.Fatalf("deploySummary = %q, want ok", got)
+	}
+	sshLog := filepath.Join(t.TempDir(), "ssh.log")
+	t.Setenv("GIBCERT_TEST_SSH_LOG", sshLog)
+	t.Setenv("GIBCERT_TEST_SSH_DOWN", "1")
+
+	// The host holds current material: renew and plan leave it alone.
+	if out, errOut, code := captureCommand(t, func() int { return cmdRenew(p, []string{"--no-jitter"}) }); code != 0 {
+		t.Fatalf("renew with the host down: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if out, errOut, code := captureCommand(t, func() int { return cmdPlan(p, nil) }); code != 0 || strings.TrimSpace(out) != "no changes" {
+		t.Fatalf("plan: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if got := deploySummary(cert, store); got != "ok" {
+		t.Fatalf("deploySummary = %q, want ok", got)
+	}
+	if b, _ := os.ReadFile(sshLog); len(b) != 0 {
+		t.Fatalf("ssh was run: %q", b)
+	}
+
+	// An explicit deploy rechecks the host.
+	if out, errOut, code := captureCommand(t, func() int { return cmdDeploy(p, []string{"example.com"}) }); code != 1 || !strings.Contains(errOut, "timed out") {
+		t.Fatalf("deploy with the host down: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+
+	// A mode change is planned from the records and applied.
+	t.Setenv("GIBCERT_TEST_SSH_DOWN", "")
+	cfgText, err := os.ReadFile(p.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Config, []byte(strings.Replace(string(cfgText), "mode 0640", "mode 0600", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := captureCommand(t, func() int { return cmdPlan(p, nil) })
+	if code != 0 || !strings.Contains(out, "deploy example.com/nginx@web1: retry (fullchain chmod 0600, key chmod 0600; last attempt failed: ") {
+		t.Fatalf("plan after mode change: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if out, errOut, code := captureCommand(t, func() int { return cmdApply(p, []string{"--yes"}) }); code != 0 {
+		t.Fatalf("apply: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	if fi, err := os.Stat(filepath.Join(dest, "privkey.pem")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("privkey stat = %v, %v", fi, err)
+	}
+	if out, errOut, code := captureCommand(t, func() int { return cmdPlan(p, nil) }); code != 0 || strings.TrimSpace(out) != "no changes" {
+		t.Fatalf("plan after apply: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+}
+
+func TestPermissionHintQuotesRemoteNames(t *testing.T) {
+	var out strings.Builder
+	d := &config.Deploy{Fullchain: "/etc/my certs/fullchain.pem", Group: "ssl-cert"}
+	printPermissionHint(&out, &config.Host{Name: "web1"}, &receive.Hello{User: "x; rm -rf /"}, d)
+	for _, want := range []string{
+		"install -d -o root -g ssl-cert -m 2750 '/etc/my certs'\n",
+		"setfacl -m 'u:x; rm -rf /:rwx' '/etc/my certs'\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("hint = %q, want %q", out.String(), want)
+		}
 	}
 }
 

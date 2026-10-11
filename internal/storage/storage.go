@@ -184,6 +184,12 @@ type CertDeployMeta struct {
 	Path   string    `json:"path"`
 	SHA256 string    `json:"sha256"`
 	At     time.Time `json:"at"`
+	// Owner, Group, and Mode are the attributes the deploy target requested
+	// when the material was installed; empty means not managed. They are only
+	// consulted for remote hosts, which are not inspected before a deploy.
+	Owner string       `json:"owner,omitempty"`
+	Group string       `json:"group,omitempty"`
+	Mode  *os.FileMode `json:"mode,omitempty"`
 }
 
 // CertDeployFailure records that the latest deploy attempt of a target on a

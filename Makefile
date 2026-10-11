@@ -184,7 +184,7 @@ release:
 	$(GORELEASER) release --clean
 
 clean:
-	rm -rf $(APP) dist coverage.out
+	rm -rf $(APP) dist build coverage.out
 
 check: all
 

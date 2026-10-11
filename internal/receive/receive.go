@@ -20,7 +20,8 @@
 // as a local deploy, as the user it was started as. It never escalates: the
 // files it writes are limited to what that user may write.
 //
-// Stdout carries only the Response. Hook output and warnings go to stderr.
+// Stdout carries only the Response, which also carries warnings. Hook output
+// goes to stderr.
 package receive
 
 import (
@@ -31,8 +32,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"os/user"
 	"runtime"
+	"strings"
 
 	"gitfield.org/fsky/gibcert/internal/buildinfo"
 	"gitfield.org/fsky/gibcert/internal/deploy"
@@ -73,13 +76,16 @@ type Envelope struct {
 	Request  *deploy.Request `json:"request,omitempty"`
 }
 
-// Response is the receiver's single reply.
+// Response is the receiver's single reply. Changed lists the kinds that were
+// installed, or would be by a check; it is also set on a failure that happened
+// after the files were installed, such as a failed after hook.
 type Response struct {
 	Protocol int      `json:"protocol"`
 	OK       bool     `json:"ok"`
 	Error    *Error   `json:"error,omitempty"`
 	Hello    *Hello   `json:"hello,omitempty"`
 	Changed  []string `json:"changed,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Error describes why a request failed.
@@ -100,9 +106,8 @@ type Hello struct {
 }
 
 // Serve handles one request read from in, writes the Response to out, and
-// returns the process exit status. Hook output and warnings go to errOut.
+// returns the process exit status. Hook output goes to errOut.
 func Serve(in io.Reader, out, errOut io.Writer) int {
-	ignoreHangup()
 	resp := handle(in, errOut, os.Geteuid(), os.Getenv)
 	resp.Protocol = ProtocolVersion
 	if err := json.NewEncoder(out).Encode(resp); err != nil {
@@ -161,20 +166,67 @@ func apply(env Envelope, errOut io.Writer, euid int) Response {
 	if err := req.Validate(); err != nil {
 		return fail(CodeInvalid, "%v", err)
 	}
+	// The request is complete: finish or roll back the installation even if
+	// the connection drops or the receiver is asked to stop.
+	defer holdSignals()()
+	hookOut := hookWriter{errOut}
+	var warnings bytes.Buffer
 	res, err := deploy.Apply(*req, deploy.ApplyOptions{
-		Out:            errOut,
-		HookStdout:     errOut,
-		HookStderr:     errOut,
+		Out:            &warnings,
+		HookStdout:     hookOut,
+		HookStderr:     hookOut,
 		DryRun:         env.Op == OpCheck,
 		RefuseSymlinks: true,
 	})
+	var resp Response
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
-			return fail(CodePermission, "%v (gibcert receive runs as uid %d)", err, euid)
+			resp = fail(CodePermission, "%v (gibcert receive runs as uid %d)", err, euid)
+		} else {
+			resp = fail(CodeFailed, "%v", err)
 		}
-		return fail(CodeFailed, "%v", err)
+	} else {
+		resp.OK = true
 	}
-	return Response{OK: true, Changed: res.Changed}
+	resp.Changed = res.Changed
+	resp.Warnings = strings.Split(strings.TrimRight(warnings.String(), "\n"), "\n")
+	if len(resp.Warnings) == 1 && resp.Warnings[0] == "" {
+		resp.Warnings = nil
+	}
+	return resp
+}
+
+// hookWriter forwards hook output and never fails. Being no *os.File, it makes
+// hooks write into a pipe instead of inheriting the receiver's stderr, so a
+// hook that leaves a process running in the background does not hold the SSH
+// session open; swallowing errors keeps a dropped connection from turning a
+// successful hook into a failed one.
+type hookWriter struct{ w io.Writer }
+
+func (h hookWriter) Write(p []byte) (int, error) {
+	_, _ = h.w.Write(p)
+	return len(p), nil
+}
+
+// catchSignals delivers sigs to a channel that is drained and otherwise
+// ignored, until the returned function is called.
+func catchSignals(sigs ...os.Signal) (release func()) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, sigs...)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-c:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(c)
+		close(done)
+	}
 }
 
 func hello(euid int) *Hello {

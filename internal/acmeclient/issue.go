@@ -33,6 +33,7 @@ import (
 	"gitfield.org/fsky/gibcert/internal/acme"
 	"gitfield.org/fsky/gibcert/internal/challenge"
 	"gitfield.org/fsky/gibcert/internal/config"
+	"gitfield.org/fsky/gibcert/internal/renew"
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
@@ -427,9 +428,15 @@ func Issue(ctx context.Context, c *Client, cert *config.Certificate, store *stor
 	return nil
 }
 
+// maxNotBeforeSkew tolerates a CA that does not backdate notBefore while the
+// local clock runs slightly behind. notAfter stays strict.
+const maxNotBeforeSkew = 5 * time.Minute
+
 // validateIssuedChain checks the returned material before any canonical state
 // changes. The supplied chain need not terminate at a system-trusted root:
-// private ACME servers and chains omitting their root are supported.
+// private ACME servers and chains omitting their root are supported. Every
+// requested name must appear literally among the leaf SANs, using the same
+// rule as the renewal decision; extra SANs added by the CA are accepted.
 func validateIssuedChain(chain [][]byte, key crypto.Signer, names []string, now time.Time) (*x509.Certificate, error) {
 	if len(chain) == 0 {
 		return nil, errors.New("chain contained no certificates")
@@ -440,7 +447,7 @@ func validateIssuedChain(chain [][]byte, key crypto.Signer, names []string, now 
 		if err != nil {
 			return nil, fmt.Errorf("parse certificate %d: %w", i+1, err)
 		}
-		if now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
+		if now.Add(maxNotBeforeSkew).Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
 			return nil, fmt.Errorf("certificate %d is not currently valid", i+1)
 		}
 		if len(cert.UnhandledCriticalExtensions) != 0 {
@@ -470,21 +477,8 @@ func validateIssuedChain(chain [][]byte, key crypto.Signer, names []string, now 
 			return nil, errors.New("leaf extended key usage does not permit TLS server authentication")
 		}
 	}
-	for _, name := range names {
-		if strings.HasPrefix(name, "*.") {
-			found := false
-			for _, san := range leaf.DNSNames {
-				if strings.EqualFold(san, name) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return nil, fmt.Errorf("leaf does not cover requested wildcard %q", name)
-			}
-		} else if err := leaf.VerifyHostname(name); err != nil {
-			return nil, fmt.Errorf("leaf does not cover requested name %q: %w", name, err)
-		}
+	if name, missing := renew.MissingSAN(leaf, names); missing {
+		return nil, fmt.Errorf("leaf does not list requested name %q", name)
 	}
 	for i := range len(parsed) - 1 {
 		if err := parsed[i].CheckSignatureFrom(parsed[i+1]); err != nil {

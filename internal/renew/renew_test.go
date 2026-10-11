@@ -23,10 +23,12 @@ import (
 	"crypto/x509/pkix"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"testing"
 	"time"
 
+	"gitfield.org/fsky/gibcert/internal/challenge"
 	"gitfield.org/fsky/gibcert/internal/config"
 	"gitfield.org/fsky/gibcert/internal/localca"
 	"gitfield.org/fsky/gibcert/internal/storage"
@@ -194,6 +196,13 @@ func TestShouldRenewWithCachedARI(t *testing.T) {
 
 func writeTestCert(t *testing.T, store *storage.Store, name string, notBefore, notAfter time.Time) {
 	t.Helper()
+	writeTestLeaf(t, store, name, []string{name}, notBefore, notAfter)
+}
+
+// writeTestLeaf stores a self-signed leaf with serial 1 and the given DNS and
+// IP SANs.
+func writeTestLeaf(t *testing.T, store *storage.Store, name string, sans []string, notBefore, notAfter time.Time) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -201,10 +210,16 @@ func writeTestCert(t *testing.T, store *storage.Store, name string, notBefore, n
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: name},
-		DNSNames:     []string{name},
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	for _, san := range sans {
+		if ip := net.ParseIP(san); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, san)
+		}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -231,14 +246,12 @@ func TestShouldRenewSANSet(t *testing.T) {
 	if err := localca.Issue(cert, ca, store, localca.IssueOptions{Out: io.Discard, Now: now}); err != nil {
 		t.Fatal(err)
 	}
-	meta, err := store.LoadCertMeta(cert.Name)
+	issued, err := store.LoadCertMeta(cert.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta.Names = []string{"stale-metadata.example"}
-	if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
-		t.Fatal(err)
-	}
+	stale := *issued
+	stale.Names, stale.SerialNumber = []string{"stale-metadata.example"}, "stale"
 	tests := []struct {
 		name    string
 		names   []string
@@ -253,18 +266,35 @@ func TestShouldRenewSANSet(t *testing.T) {
 		{"changed IP", []string{"example.com", "*.example.com", "192.0.2.2", "2001:db8::1"}, true},
 		{"removed IP", []string{"example.com", "*.example.com", "2001:db8::1"}, true},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			desired := *cert
-			desired.Names = tc.names
-			d := ShouldRenew(cfg, &desired, store, now)
-			if d.Due != tc.wantDue {
-				t.Fatalf("Due=%v, want %v (%s)", d.Due, tc.wantDue, d.Reason)
+	// The same set rules apply whether the requested names recorded for this
+	// leaf or, without such a record, the leaf SANs are compared.
+	for _, record := range []struct {
+		name string
+		meta *storage.CertMeta
+	}{{"requested names", issued}, {"stale metadata", &stale}, {"missing metadata", nil}} {
+		path := store.CertPaths(cert.Name).Meta
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if record.meta != nil {
+			if err := store.SaveCertMeta(cert.Name, *record.meta); err != nil {
+				t.Fatal(err)
 			}
-		})
+		}
+		for _, tc := range tests {
+			t.Run(record.name+"/"+tc.name, func(t *testing.T) {
+				desired := *cert
+				desired.Names = tc.names
+				d := ShouldRenew(cfg, &desired, store, now)
+				if d.Due != tc.wantDue {
+					t.Fatalf("Due=%v, want %v (%s)", d.Due, tc.wantDue, d.Reason)
+				}
+			})
+		}
 	}
-	meta.IssuerType = "imported"
-	if err := store.SaveCertMeta(cert.Name, *meta); err != nil {
+	imported := *issued
+	imported.IssuerType = "imported"
+	if err := store.SaveCertMeta(cert.Name, imported); err != nil {
 		t.Fatal(err)
 	}
 	desired := *cert
@@ -277,6 +307,59 @@ func TestShouldRenewSANSet(t *testing.T) {
 	}
 	if d := ShouldRenew(cfg, cert, store, now); !d.Due {
 		t.Fatal("unready local CA left matching leaf current")
+	}
+}
+
+// A CA may add SANs it was not asked for (www bundling, private CA
+// templates). The requested names recorded for the leaf keep such a leaf
+// current, while configuration changes still make it due.
+func TestShouldRenewToleratesCAAddedSANs(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	store := storage.New(t.TempDir())
+	writeTestLeaf(t, store, "example.com",
+		[]string{"example.com", "api.example.com", "www.example.com", "*.example.com", "192.0.2.1"},
+		now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	tests := []struct {
+		name      string
+		requested []string
+		serial    string
+		names     []string
+		wantDue   bool
+	}{
+		{name: "extra SAN tolerated", requested: []string{"example.com", "api.example.com"},
+			names: []string{"API.example.com", "example.com"}},
+		{name: "extra wildcard and IP tolerated", requested: []string{"example.com"}, names: []string{"example.com"}},
+		{name: "added name", requested: []string{"example.com", "api.example.com"},
+			names: []string{"example.com", "api.example.com", "mail.example.com"}, wantDue: true},
+		{name: "added name the CA already bundled", requested: []string{"example.com", "api.example.com"},
+			names: []string{"example.com", "api.example.com", "www.example.com"}, wantDue: true},
+		{name: "removed name", requested: []string{"example.com", "api.example.com"},
+			names: []string{"example.com"}, wantDue: true},
+		{name: "recorded name missing from leaf", requested: []string{"example.com", "mail.example.com"},
+			names: []string{"example.com", "mail.example.com"}, wantDue: true},
+		{name: "wildcard SAN does not stand in for host", requested: []string{"mail.example.com"},
+			names: []string{"mail.example.com"}, wantDue: true},
+		{name: "record for another leaf ignored", requested: []string{"example.com"}, serial: "2",
+			names: []string{"example.com"}, wantDue: true},
+		{name: "exact SAN set without record", serial: "2",
+			names: []string{"example.com", "api.example.com", "www.example.com", "*.example.com", "192.0.2.1"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			serial := tc.serial
+			if serial == "" {
+				serial = "1"
+			}
+			meta := storage.CertMeta{Name: "example.com", IssuerType: "acme", Names: tc.requested, SerialNumber: serial}
+			if err := store.SaveCertMeta("example.com", meta); err != nil {
+				t.Fatal(err)
+			}
+			cert := &config.Certificate{Name: "example.com", Names: tc.names}
+			d := ShouldRenew(&config.Config{}, cert, store, now)
+			if d.Due != tc.wantDue {
+				t.Fatalf("Due=%v, want %v (%s)", d.Due, tc.wantDue, d.Reason)
+			}
+		})
 	}
 }
 
@@ -338,6 +421,20 @@ func TestShouldRenewIssuerIdentity(t *testing.T) {
 		{name: "missing metadata", account: "primary-account"},
 		{name: "empty legacy metadata", account: "primary-account", meta: &storage.CertMeta{}},
 		{name: "incomplete ACME identity", ca: "dev", meta: &storage.CertMeta{IssuerType: "acme", Account: "foreign"}},
+		// v0.1.0 and v0.2.0 recorded the primary account name for failover
+		// issuance, with the failover's CA and directory.
+		{name: "legacy failover record accepted", account: "primary-account", failover: []config.Issuer{{Account: "backup-account"}},
+			meta: &storage.CertMeta{IssuerType: "acme", Account: "primary-account", CA: "backup", Directory: backup.Directory}},
+		{name: "legacy implicit failover record accepted", account: "primary-account", failover: []config.Issuer{{CA: "backup"}},
+			meta: &storage.CertMeta{IssuerType: "acme", Account: "primary-account", CA: "backup", Directory: backup.Directory}},
+		{name: "legacy failover record without CA accepted", account: "primary-account", failover: []config.Issuer{{Account: "backup-account"}},
+			meta: &storage.CertMeta{Account: "primary-account", Directory: backup.Directory}},
+		{name: "legacy failover record after failover removed", account: "primary-account",
+			meta: &storage.CertMeta{IssuerType: "acme", Account: "primary-account", CA: "backup", Directory: backup.Directory}, wantDue: true},
+		{name: "legacy failover record with other CA", account: "primary-account", failover: []config.Issuer{{Account: "backup-account"}},
+			meta: &storage.CertMeta{IssuerType: "acme", Account: "primary-account", CA: "old", Directory: backup.Directory}, wantDue: true},
+		{name: "legacy failover record after primary changed", account: "other-account", failover: []config.Issuer{{Account: "backup-account"}},
+			meta: &storage.CertMeta{IssuerType: "acme", Account: "primary-account", CA: "backup", Directory: backup.Directory}, wantDue: true},
 		{name: "legacy ACME same", account: "primary-account",
 			meta: &storage.CertMeta{Account: "primary-account", Directory: acme.Directory}},
 		{name: "legacy ACME changed", account: "other-account",
@@ -443,5 +540,68 @@ func TestTLSAReconcileReason(t *testing.T) {
 	}
 	if got := TLSAReconcileReason(&config.Certificate{Name: "example.com"}, store); got != "" {
 		t.Fatalf("certificate without tlsa block got %q", got)
+	}
+}
+
+func TestTLSAReconcileReasonStoredKey(t *testing.T) {
+	store := storage.New(t.TempDir())
+	paths := store.CertPaths("example.com")
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key, err := storage.GenerateAccountKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteKey(paths.Key, key); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := challenge.SPKIHash(key.Public(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := challenge.TLSARData(3, 1, 1, hash)
+	published := func(rdata ...string) *storage.CertMeta {
+		meta := &storage.CertMeta{Name: "example.com", TLSA: &storage.CertTLSAMeta{Usage: 3, Selector: 1, MatchingType: 1}}
+		for _, value := range rdata {
+			meta.TLSA.Published = append(meta.TLSA.Published, storage.TLSARecord{Owner: "_25._tcp.example.com.", RData: value})
+		}
+		return meta
+	}
+	const unpublished = "stored key TLSA not published"
+	tests := []struct {
+		name            string
+		meta            *storage.CertMeta
+		want            string
+		wantUnpublished bool
+	}{
+		{name: "stored key published", meta: published(stored)},
+		{name: "stored and next key published", meta: published("3 1 1 aa", stored)},
+		{name: "only another key published", meta: published("3 1 1 aa"), want: unpublished, wantUnpublished: true},
+		{name: "no TLSA metadata", meta: &storage.CertMeta{Name: "example.com"}, want: "TLSA records not published"},
+		{name: "no metadata", want: "TLSA records not published"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(paths.Meta); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if tc.meta != nil {
+				if err := store.SaveCertMeta("example.com", *tc.meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cert := &config.Certificate{
+				Name:  "example.com",
+				Names: []string{"example.com"},
+				TLSA:  &config.TLSASpec{Ports: []config.TLSAPort{{Port: 25, Protocol: "tcp"}}},
+			}
+			if got := TLSAReconcileReason(cert, store); got != tc.want {
+				t.Fatalf("TLSAReconcileReason = %q, want %q", got, tc.want)
+			}
+			if got := StoredKeyTLSAUnpublished(cert, store); got != tc.wantUnpublished {
+				t.Fatalf("StoredKeyTLSAUnpublished = %v, want %v", got, tc.wantUnpublished)
+			}
+		})
 	}
 }

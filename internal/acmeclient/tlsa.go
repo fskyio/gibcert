@@ -76,8 +76,14 @@ func ReconcileTLSA(ctx context.Context, store *storage.Store, cfg *config.Config
 		return fmt.Errorf("load cert metadata: %w", err)
 	}
 	meta.Name = cert.Name
-	meta.Names = append([]string(nil), cert.Names...)
-	meta.SerialNumber = leaf.SerialNumber.String()
+	// Names records what was requested for this leaf and lets the renewal
+	// decision tolerate SANs the CA added. Republishing TLSA records must not
+	// claim the current configuration was requested; without a record for this
+	// leaf, record its actual SANs.
+	if serial := leaf.SerialNumber.String(); meta.SerialNumber != serial || len(meta.Names) == 0 {
+		meta.Names = leafNames(leaf)
+		meta.SerialNumber = serial
+	}
 	meta.NotBefore = leaf.NotBefore
 	meta.NotAfter = leaf.NotAfter
 	if meta.IssuedAt.IsZero() {
@@ -109,6 +115,15 @@ func fillTLSAMetaDefaults(meta *storage.CertMeta, defaults storage.CertMeta) {
 	if meta.Directory == "" {
 		meta.Directory = defaults.Directory
 	}
+}
+
+// leafNames lists a leaf's DNS and IP SANs in certificate order.
+func leafNames(leaf *x509.Certificate) []string {
+	names := append([]string(nil), leaf.DNSNames...)
+	for _, ip := range leaf.IPAddresses {
+		names = append(names, ip.String())
+	}
+	return names
 }
 
 func readStoredLeaf(path string) (*x509.Certificate, error) {

@@ -400,16 +400,19 @@ func TestDeployPrivateKeyModes(t *testing.T) {
 	}
 	for _, der := range []bool{false, true} {
 		for _, tc := range []struct {
-			name      string
-			unchanged bool
-			explicit  os.FileMode
-			wantMode  os.FileMode
-			wantError bool
+			name        string
+			unchanged   bool
+			existing    os.FileMode
+			explicit    os.FileMode
+			wantMode    os.FileMode
+			wantWarning bool
+			wantError   bool
 		}{
-			{name: "changed inherited", wantMode: 0o600},
-			{name: "unchanged inherited", unchanged: true, wantMode: 0o600},
-			{name: "explicit group read", explicit: 0o640, wantMode: 0o640},
-			{name: "unsafe explicit", explicit: 0o644, wantError: true},
+			{name: "changed inherited group read", existing: 0o640, wantMode: 0o640},
+			{name: "changed inherited other read", existing: 0o644, wantMode: 0o640, wantWarning: true},
+			{name: "unchanged inherited other read", unchanged: true, existing: 0o644, wantMode: 0o640, wantWarning: true},
+			{name: "explicit group read", existing: 0o644, explicit: 0o640, wantMode: 0o640},
+			{name: "unsafe explicit", existing: 0o644, explicit: 0o644, wantError: true},
 		} {
 			t.Run(tc.name+map[bool]string{false: " PEM", true: " DER"}[der], func(t *testing.T) {
 				root := t.TempDir()
@@ -444,13 +447,17 @@ func TestDeployPrivateKeyModes(t *testing.T) {
 				if tc.unchanged {
 					previous = data
 				}
-				if err := os.WriteFile(dst, previous, 0o644); err != nil {
+				if err := os.WriteFile(dst, previous, tc.existing); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Chmod(dst, 0o644); err != nil {
+				if err := os.Chmod(dst, tc.existing); err != nil {
 					t.Fatal(err)
 				}
-				_, err = Deploy(&config.Certificate{Name: "service", Deploys: []*config.Deploy{d}}, store, os.Stdout)
+				var out bytes.Buffer
+				_, err = Deploy(&config.Certificate{Name: "service", Deploys: []*config.Deploy{d}}, store, &out)
+				if warned := strings.Contains(out.String(), "narrowing private-key mode"); warned != tc.wantWarning {
+					t.Fatalf("narrowing warning %v, want %v; output %q", warned, tc.wantWarning, out.String())
+				}
 				got, readErr := os.ReadFile(dst)
 				if readErr != nil {
 					t.Fatal(readErr)
@@ -459,7 +466,7 @@ func TestDeployPrivateKeyModes(t *testing.T) {
 					if err == nil || !bytes.Equal(got, previous) {
 						t.Fatalf("unsafe deployment: error %v, destination changed %v", err, !bytes.Equal(got, previous))
 					}
-					assertMode(t, dst, 0o644)
+					assertMode(t, dst, tc.existing)
 				} else {
 					if err != nil {
 						t.Fatal(err)
@@ -471,5 +478,36 @@ func TestDeployPrivateKeyModes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRequestValidateUsesConfigPathRule(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		ok   bool
+	}{
+		{"/ProgramData/gibcert/fullchain.pem", true},
+		{"relative/fullchain.pem", false},
+		{"", false},
+	} {
+		req := Request{Cert: "c", Target: "t", Files: []File{{Kind: "fullchain", Path: tc.path}}}
+		if err := req.Validate(); (err == nil) != tc.ok {
+			t.Errorf("Validate(%q) = %v, want ok %v", tc.path, err, tc.ok)
+		}
+	}
+}
+
+func TestApplyReportsInstalledFilesWhenAfterHookFails(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "fullchain.pem")
+	req := Request{Cert: "c", Target: "t", Files: []File{{Kind: "fullchain", Path: dst, Data: []byte("new")}}, After: "exit 3"}
+	res, err := Apply(req, ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "after hook") {
+		t.Fatalf("Apply = %v, want after hook failure", err)
+	}
+	if len(res.Changed) != 1 || res.Changed[0] != "fullchain" {
+		t.Fatalf("changed = %v, want the installed fullchain", res.Changed)
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "new" {
+		t.Fatalf("installed content = %q, error %v", got, err)
 	}
 }

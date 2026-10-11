@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"gitfield.org/fsky/gibcert/internal/paths"
@@ -340,6 +342,130 @@ certificate example.com {
 		t.Fatalf("renew got code=%d stdout=%q stderr=%q", code, out, errOut)
 	}
 	pdns.wantOwners(t, "_25._tcp.mx.example.com.")
+}
+
+// A TLSA reconcile failure between renewals is reported, but the stored
+// material is still deployed unless its key is known to lack a published TLSA
+// record.
+func TestTLSAReconcileFailureDeploysStoredMaterial(t *testing.T) {
+	pdns := &tlsaFakePowerDNS{apiKey: "topsecret", records: map[string][]string{}}
+	var down atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down.Load() {
+			http.Error(w, "provider down", http.StatusInternalServerError)
+			return
+		}
+		pdns.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	p := &paths.Paths{Config: filepath.Join(dir, "gibcert.scfg"), State: filepath.Join(dir, "state")}
+	fullchain := filepath.Join(dir, "deploy", "fullchain.pem")
+	key := filepath.Join(dir, "deploy", "privkey.pem")
+	writeConfig := func(tlsaNames string) {
+		t.Helper()
+		cfg := fmt.Sprintf(`
+ca dev {
+  type local
+}
+provider pdns {
+  type dns
+  driver powerdns
+  api-url %s
+  server-id localhost
+  secret api-key {
+    value topsecret
+  }
+}
+certificate example.com {
+  ca dev
+  names example.com
+  tlsa {
+    provider pdns
+    port 25
+    ttl 60
+    %s
+  }
+  deploy local {
+    fullchain %s
+    key %s
+  }
+}
+`, srv.URL, tlsaNames, fullchain, key)
+		if err := os.WriteFile(p.Config, []byte(cfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig("")
+	if out, errOut, code := captureCommand(t, func() int { return cmdApply(p, []string{"--yes"}) }); code != 0 {
+		t.Fatalf("initial apply got code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	store := storage.New(p.State)
+	published, err := store.LoadCertMeta("example.com")
+	if err != nil || published.TLSA == nil {
+		t.Fatalf("initial apply stored no TLSA metadata: %v", err)
+	}
+
+	// With DNS down, every run below has to reconcile TLSA and fails to.
+	down.Store(true)
+	runs := map[string]func() int{
+		"renew": func() int { return cmdRenew(p, []string{"--no-jitter"}) },
+		"apply": func() int { return cmdApply(p, []string{"--yes"}) },
+	}
+	for _, tc := range []struct {
+		name         string
+		tlsa         func(*storage.CertTLSAMeta) *storage.CertTLSAMeta
+		wantDeployed bool
+	}{
+		// The current key is already published under the old owners.
+		{"owner change", func(m *storage.CertTLSAMeta) *storage.CertTLSAMeta { return m }, true},
+		// State without TLSA tracking, as after an upgrade.
+		{"no TLSA metadata", func(*storage.CertTLSAMeta) *storage.CertTLSAMeta { return nil }, true},
+		// A rollover whose publication failed: no record matches the key.
+		{"stored key unpublished", func(m *storage.CertTLSAMeta) *storage.CertTLSAMeta {
+			c := *m
+			c.Published = nil
+			for _, rec := range m.Published {
+				c.Published = append(c.Published, storage.TLSARecord{Owner: rec.Owner, RData: "3 1 1 00"})
+			}
+			return &c
+		}, false},
+	} {
+		for _, cmd := range []string{"renew", "apply"} {
+			t.Run(tc.name+"/"+cmd, func(t *testing.T) {
+				writeConfig("names mail.example.com")
+				meta := *published
+				meta.TLSA = tc.tlsa(published.TLSA)
+				if err := store.SaveCertMeta("example.com", meta); err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{fullchain, key} {
+					if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				out, errOut, code := captureCommand(t, runs[cmd])
+				if code != 1 || !strings.Contains(errOut, "tlsa reconcile") {
+					t.Fatalf("%s got code=%d stdout=%q stderr=%q; want exit 1 reporting the TLSA failure", cmd, code, out, errOut)
+				}
+				deployedChain, err := os.ReadFile(fullchain)
+				if err != nil {
+					t.Fatal(err)
+				}
+				deployedKey, err := os.ReadFile(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, pairErr := tls.X509KeyPair(deployedChain, deployedKey)
+				if deployed := pairErr == nil; deployed != tc.wantDeployed {
+					t.Fatalf("%s restored the deploy target=%v, want %v; stdout=%q stderr=%q", cmd, deployed, tc.wantDeployed, out, errOut)
+				}
+				if !tc.wantDeployed && !strings.Contains(errOut, "deploy skipped") {
+					t.Fatalf("%s did not report the skipped deploy: %q", cmd, errOut)
+				}
+			})
+		}
+	}
 }
 
 // tlsaFakePowerDNS implements the PowerDNS API calls the TLSA editor makes for

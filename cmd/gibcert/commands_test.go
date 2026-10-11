@@ -619,7 +619,7 @@ certificate example.com {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pl, err := plan.Compute(cfg, store, time.Now(), nil)
+			pl, err := plan.Compute(cfg, store, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -655,7 +655,7 @@ certificate example.com {
 			if after.Issuer.CommonName != tc.ca+" CA" {
 				t.Fatalf("leaf issuer=%s, want %s CA", after.Issuer.CommonName, tc.ca)
 			}
-			pl, err = plan.Compute(cfg, store, time.Now(), nil)
+			pl, err = plan.Compute(cfg, store, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -727,12 +727,14 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				wantCode := 1
-				if failure == "destination drift" {
-					wantCode = 0
-				}
-				if out, errOut, code := captureCommand(t, func() int { return cmdDeploy(p, []string{cert.Name}) }); code != wantCode {
-					t.Fatalf("initial deploy: code=%d want=%d stdout=%q stderr=%q", code, wantCode, out, errOut)
+				if failure != "after hook failure" {
+					wantCode := 1
+					if failure == "destination drift" {
+						wantCode = 0
+					}
+					if out, errOut, code := captureCommand(t, func() int { return cmdDeploy(p, []string{cert.Name}) }); code != wantCode {
+						t.Fatalf("initial deploy: code=%d want=%d stdout=%q stderr=%q", code, wantCode, out, errOut)
+					}
 				}
 				switch failure {
 				case "write failure":
@@ -751,6 +753,14 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 				}
 			}
 			if failure == "after hook failure" {
+				// The first scheduled run installs the files before the after
+				// hook fails, so the reload still runs for that material.
+				if out, errOut, code := captureCommand(t, func() int { return cmdRenew(p, []string{"--no-jitter", "--verbose"}) }); code != 1 {
+					t.Fatalf("renew with failing after hook: code=%d stdout=%q stderr=%q", code, out, errOut)
+				}
+				if reloadLog, err := os.ReadFile(reloads); err != nil || string(reloadLog) != "a,b;" {
+					t.Fatalf("reloads after failed after hook = %q, %v; want %q", reloadLog, err, "a,b;")
+				}
 				if err := os.Remove(fault); err != nil {
 					t.Fatal(err)
 				}
@@ -792,9 +802,18 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 				if _, err := tls.X509KeyPair(fullchain, deployedKey); err != nil {
 					t.Fatalf("%s deployed an invalid cert/key pair: %v", cert.Name, err)
 				}
+				// A drifted 0644 key keeps its group access but loses other
+				// access.
+				wantMode := os.FileMode(0o600)
+				if failure == "destination drift" {
+					wantMode = 0o640
+				}
 				info, err := os.Stat(d.Key)
-				if err != nil || info.Mode().Perm() != 0o600 {
-					t.Fatalf("%s private-key mode was not reconciled: %v", cert.Name, err)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != wantMode {
+					t.Fatalf("%s private-key mode = %v, want %v", cert.Name, info.Mode().Perm(), wantMode)
 				}
 			}
 			hookLog, err := os.ReadFile(hooks)
@@ -804,14 +823,14 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 			reloadLog, err := os.ReadFile(reloads)
 			wantReload := "a,b;"
 			if failure == "after hook failure" {
-				// Files were already installed; retry the per-target hook without
-				// scheduling a content-change reload again.
+				// The failed run installed the files and already reloaded for
+				// them; the retry only reruns the per-target hook.
 				wantReload = ""
 			}
 			if err != nil || string(reloadLog) != wantReload {
 				t.Fatalf("coalesced reloads = %q, %v; want %q", reloadLog, err, wantReload)
 			}
-			pl, err := plan.Compute(cfg, store, time.Now(), nil)
+			pl, err := plan.Compute(cfg, store, time.Now())
 			if err != nil || !pl.Empty() {
 				t.Fatalf("pending deployment did not converge: %#v, %v", pl, err)
 			}
@@ -825,5 +844,51 @@ func TestRenewReconcilesCurrentDeployments(t *testing.T) {
 				t.Fatalf("no-op renewal repeated reloads: %q, %v", againReloads, err)
 			}
 		})
+	}
+}
+
+// A required certificate that is still valid satisfies its dependents even
+// when renew fails to deploy it, so a due dependent is still issued.
+func TestRenewIssuesDueDependentOfValidCertificateWithFailedDeploy(t *testing.T) {
+	dir := t.TempDir()
+	deployKey := filepath.Join(dir, "deploy", "a", "privkey.pem")
+	src := fmt.Sprintf(`
+ca dev {
+  type local
+}
+certificate a {
+  ca dev
+  names a.example
+  deploy local {
+    fullchain %s
+    key %s
+  }
+}
+certificate b {
+  ca dev
+  names b.example
+  requires a
+}
+`, filepath.Join(dir, "deploy", "a", "fullchain.pem"), deployKey)
+	p := &paths.Paths{Config: filepath.Join(dir, "gibcert.scfg"), State: filepath.Join(dir, "state")}
+	if err := os.WriteFile(p.Config, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, errOut, code := captureCommand(t, func() int { return cmdIssue(p, []string{"a"}) }); code != 0 {
+		t.Fatalf("issue a: code=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	// A directory at the key path makes every deploy of a fail.
+	if err := os.MkdirAll(deployKey, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := captureCommand(t, func() int { return cmdRenew(p, []string{"--no-jitter", "--verbose"}) })
+	if code != 1 || !strings.Contains(errOut, "a: deploy") {
+		t.Fatalf("renew got code=%d stdout=%q stderr=%q; want exit 1 reporting the deploy failure", code, out, errOut)
+	}
+	if strings.Contains(out, "skipped") {
+		t.Fatalf("renew gated the dependent of a valid certificate: %q", out)
+	}
+	if _, err := os.Stat(storage.New(p.State).CertPaths("b").Cert); err != nil {
+		t.Fatalf("due dependent b was not issued: %v", err)
 	}
 }

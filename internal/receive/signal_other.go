@@ -17,5 +17,11 @@
 
 package receive
 
-// ignoreHangup is a no-op where SIGHUP and SIGPIPE do not apply.
-func ignoreHangup() {}
+import "os"
+
+// holdSignals keeps an interrupt from killing the receiver in the middle of
+// an installation: once a request is read the receiver finishes or rolls it
+// back. The returned function restores the default behavior.
+func holdSignals() (release func()) {
+	return catchSignals(os.Interrupt)
+}
