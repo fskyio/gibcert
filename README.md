@@ -34,6 +34,7 @@ An ACME client is a pretty important tool for a sysadmin if you are doing things
 - Certificate dependencies: sequence issuance across certs that rely on each other
 - Renewal and deploy groups: share settings and template deploy paths across certs
 - Plan mode: inspect every pending account, certificate, deploy, and hook action before committing
+- Prune: review and remove stale certificates, accounts, local CAs, and old account key archives with a dry run and per-item exceptions
 - Local CA support for private certificates
 
 **Portability**

@@ -65,6 +65,7 @@ commands:
   revoke [flags] <cert> revoke a stored certificate at the CA
   delete [flags] <cert> remove local certificate state, optionally undeploying
   rename <old> <new>    rename stored certificate state
+  prune [flags]         remove stale local state (certs, accounts, CAs, account keys)
   list                  list configured certificates and local status
   show <certificate>    show certificate config and local status
   import <source> ...    import certificate material from another client or PEM files
@@ -97,6 +98,16 @@ delete flags:
   --revoke              revoke before deleting local state
   --reason REASON       revocation reason for --revoke (default: unspecified)
   --yes                 approve deletion/revocation non-interactively
+
+prune flags:
+  --certs               prune orphan certs that are expired, revoked, or unreadable
+  --accounts            prune accounts nothing uses
+  --cas                 prune local CAs nothing uses
+  --account-keys        prune superseded account key archives (newest is kept)
+  --include-valid       with --certs, also prune orphan certs that are still valid
+  --except ID           keep this item, as printed by --dry-run (repeatable)
+  --dry-run             print what would be pruned without removing anything
+  --yes                 approve removal non-interactively (requires a selection)
 
 import flags:
   --dry-run             print what would be imported without writing
@@ -202,6 +213,8 @@ func run() int {
 		return cmdDelete(p, args[1:])
 	case "rename":
 		return cmdRename(p, args[1:])
+	case "prune":
+		return cmdPrune(p, args[1:])
 	case "list":
 		return cmdList(p, args[1:])
 	case "show":
@@ -260,6 +273,8 @@ func cmdHelp(args []string) int {
 		fmt.Println("usage: gibcert delete [--undeploy] [--revoke] [--reason REASON] [--yes] <certificate>")
 	case "rename":
 		fmt.Println("usage: gibcert rename <old-name> <new-name>")
+	case "prune":
+		fmt.Println(pruneUsage)
 	case "list":
 		fmt.Println("usage: gibcert list")
 	case "show":

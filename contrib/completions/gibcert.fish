@@ -1,7 +1,7 @@
 # fish completion for gibcert
 
 function __gibcert_no_subcommand
-    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy host revoke delete rename list show import completion
+    set -l commands help version check plan apply issue renew account ca dns-persist tlsa deploy host revoke delete rename prune list show import completion
     not __fish_seen_subcommand_from $commands
 end
 
@@ -43,6 +43,7 @@ complete -c gibcert -n __gibcert_no_subcommand -a host -d 'manage and test remot
 complete -c gibcert -n __gibcert_no_subcommand -a revoke -d 'revoke a stored certificate at the CA'
 complete -c gibcert -n __gibcert_no_subcommand -a delete -d 'remove local certificate state'
 complete -c gibcert -n __gibcert_no_subcommand -a rename -d 'rename stored certificate state'
+complete -c gibcert -n __gibcert_no_subcommand -a prune -d 'remove stale local state'
 complete -c gibcert -n __gibcert_no_subcommand -a list -d 'list configured certificates and local status'
 complete -c gibcert -n __gibcert_no_subcommand -a show -d 'show certificate config and local status'
 complete -c gibcert -n __gibcert_no_subcommand -a import -d 'import certificate material from another client or PEM files'
@@ -108,6 +109,16 @@ complete -c gibcert -n '__fish_seen_subcommand_from delete' -l reason -d 'revoca
 complete -c gibcert -n '__fish_seen_subcommand_from delete' -l yes -d 'approve deletion'
 complete -c gibcert -n '__fish_seen_subcommand_from delete' -a '(__gibcert_certs)'
 
+# prune flags
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l certs -d 'prune orphan certs that are expired, revoked, or unreadable'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l accounts -d 'prune accounts nothing uses'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l cas -d 'prune local CAs nothing uses'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l account-keys -d 'prune superseded account key archives'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l include-valid -d 'with --certs, also prune orphan certs that are still valid'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l except -d 'keep this item, as printed by --dry-run' -r
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l dry-run -d 'print what would be pruned without removing anything'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l yes -d 'approve removal non-interactively'
+
 # import source and path
 complete -c gibcert -n '__fish_seen_subcommand_from import; and not __fish_seen_subcommand_from acme.sh certbot dehydrated lego pem' -a 'acme.sh' -d 'import from acme.sh'
 complete -c gibcert -n '__fish_seen_subcommand_from import; and not __fish_seen_subcommand_from acme.sh certbot dehydrated lego pem' -a 'certbot' -d 'import from certbot'
@@ -134,4 +145,4 @@ complete -c gibcert -n '__fish_seen_subcommand_from import; and __fish_seen_subc
 complete -c gibcert -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
 
 # help subcommands
-complete -c gibcert -n '__fish_seen_subcommand_from help' -a 'help version check plan apply issue renew account ca dns-persist deploy host revoke delete rename list show import completion'
+complete -c gibcert -n '__fish_seen_subcommand_from help' -a 'help version check plan apply issue renew account ca dns-persist deploy host revoke delete rename prune list show import completion'

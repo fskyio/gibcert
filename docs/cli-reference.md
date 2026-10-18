@@ -206,6 +206,44 @@ Rename stored certificate state and update the stored metadata name.
 
 This command does not edit the configuration file. If the old name is still configured, gibcert prints a warning so you can update the matching `certificate` block.
 
+### `gibcert prune [--certs] [--accounts] [--cas] [--account-keys] [--include-valid] [--except ID]... [--dry-run] [--yes]`
+
+Remove local state the config no longer uses. Prune prints every item it examined and asks for confirmation before deleting anything. It only deletes local files: it does not revoke certificates, remove deployed files, edit DNS, or contact any CA.
+
+Without a category flag, prune reviews all four categories interactively. `--yes` requires at least one category flag, so an unattended run has to name what it may delete. Prune refuses to run if the config fails to load or declares no certificates, because a wrong `--config` would make every stored certificate look orphaned.
+
+| Flag | Description |
+| --- | --- |
+| `--certs` | Prune certificate state that is not in the config and is expired, revoked, or has missing or unreadable metadata. |
+| `--include-valid` | With `--certs`, also prune orphan certificates that are still valid. Without it they are listed and kept. |
+| `--accounts` | Prune accounts nothing uses. |
+| `--cas` | Prune local CAs nothing uses. |
+| `--account-keys` | Prune superseded `account-*.key` archives left by `account rotate-key`, keeping the newest archive of each account. |
+| `--except ID` | Keep this item. Repeatable. IDs are printed by `--dry-run`. An ID that matches no item is an error. |
+| `--dry-run` | Print what would be pruned without removing anything. A dry run is read-only and does not take the state lock. |
+| `--yes` | Approve removal non-interactively. |
+
+```text
+$ gibcert prune --dry-run
+remove  cert/old.example.com  not in config; expired 2026-08-01
+keep    cert/spare.example    not in config; valid until 2027-02-01 (use --include-valid)
+remove  account/ca:buypass    not in config; no remaining certificate uses it
+        directory: https://api.buypass.com/acme/directory
+        note: local only; the CA registration stays and the account key is deleted permanently
+keep    account/custom        in use: declared in config
+```
+
+Items are identified as `cert/NAME`, `account/NAME`, `ca/NAME`, and `account-key/ACCOUNT/FILE`. Implicit ACME accounts are named `ca:<ca>`, for example `account/ca:letsencrypt`.
+
+Accounts and local CAs are only removed when nothing that stays needs them. An account is in use when it is declared in an `account` block, when a configured certificate issues through it as primary or failover issuer (the only way an implicit `ca:<ca>` account counts), or when a certificate that stays records it in its metadata. A local CA is in use when it is declared in a `ca` block or when a certificate that stays was signed by it. What stays depends on your selection: `--except cert/NAME` also keeps the account and CA that certificate needs, and `--accounts` without `--certs` keeps every account an orphan certificate still needs.
+
+Limits to know before confirming:
+
+- Account removal is local only. The registration at the CA stays, and the account key is deleted permanently.
+- Files are deleted, not wiped. Private keys can remain recoverable from the storage medium.
+- Removing a certificate leaves its published TLSA records, deployed files, and CA-side validity alone. Prune prints a warning for each of these. Use `gibcert delete --undeploy --revoke` when they matter.
+- Prune never removes `account.key.next` or `privkey-next.pem` on their own; a staged key only goes together with the whole certificate or account directory it belongs to. It also ignores symlinks and files that do not match the categories above.
+
 ### `gibcert list`
 
 List configured certificates with compact certificate, issuer, renewal, and deploy status.

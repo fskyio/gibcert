@@ -185,6 +185,26 @@ Rename stored certificate state and update the stored metadata name. This does
 not edit the configuration file; if the old name is still configured, gibcert
 prints a warning.
 .TP
+.B prune [\fB\-\-certs\fR] [\fB\-\-accounts\fR] [\fB\-\-cas\fR] [\fB\-\-account\-keys\fR] [\fB\-\-include\-valid\fR] [\fB\-\-except\fR \fIID\fR]... [\fB\-\-dry\-run\fR] [\fB\-\-yes\fR]
+Remove local state the config no longer uses, after printing every item
+examined and asking for confirmation. Only local files are deleted: nothing is
+revoked, undeployed, removed from DNS, or reported to a CA. Without a category
+flag all categories are reviewed interactively; \fB\-\-yes\fR requires at least
+one. Refuses to run when the config fails to load or declares no certificates.
+.IP
+\fB\-\-certs\fR prunes certificates that are not in the config and are expired,
+revoked, or have missing or unreadable metadata; \fB\-\-include\-valid\fR adds
+orphans that are still valid. \fB\-\-accounts\fR prunes accounts nothing uses
+and \fB\-\-cas\fR local CAs nothing uses, where nothing means no config entry,
+no configured certificate, and no certificate that stays. \fB\-\-account\-keys\fR
+prunes superseded account\-*.key archives, keeping the newest per account.
+.IP
+\fB\-\-except\fR keeps one item and is repeatable. Items are named cert/NAME,
+account/NAME, ca/NAME, and account\-key/ACCOUNT/FILE, as printed by
+\fB\-\-dry\-run\fR, which is read\-only. An ID matching no item is an error.
+Account removal is local only: the registration at the CA stays and the account
+key is deleted permanently. Files are deleted, not wiped.
+.TP
 .B list
 List configured certificates with compact certificate, issuer, renewal, and
 deploy status. The deploy status is failed when the last attempt on a remote

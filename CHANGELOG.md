@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `gibcert prune` removes local state the config no longer uses: orphan
+  certificates that are expired, revoked, or unreadable (`--certs`, plus
+  still-valid ones with `--include-valid`), unused ACME accounts (`--accounts`),
+  unused local CAs (`--cas`), and superseded account key archives
+  (`--account-keys`). It prints every item with a reason, `--dry-run` previews
+  without touching state, and `--except ID` keeps individual items. Accounts and
+  CAs that a surviving certificate still needs are kept. Account removal is
+  local only. `--yes` requires naming at least one category.
+
 ## [0.3.0-rc.1] - 2026-10-11
 
 Upgrading from 0.2.x: run `gibcert check` with the new binary before replacing

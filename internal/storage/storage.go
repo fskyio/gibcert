@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -252,7 +253,22 @@ func (s *Store) LoadCertMeta(name string) (*CertMeta, error) {
 }
 
 func (s *Store) ListCertNames() ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(s.Root, "certs"))
+	return s.listDirs("certs")
+}
+
+func (s *Store) ListAccountNames() ([]string, error) {
+	return s.listDirs("accounts")
+}
+
+func (s *Store) ListCANames() ([]string, error) {
+	return s.listDirs("cas")
+}
+
+// listDirs returns the names of the real directories directly under the named
+// state subdirectory, sorted. Symlinks are skipped so a listing never leads
+// outside the state directory.
+func (s *Store) listDirs(sub string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.Root, sub))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -270,6 +286,51 @@ func (s *Store) ListCertNames() ([]string, error) {
 
 func (s *Store) DeleteCert(name string) error {
 	err := os.RemoveAll(s.CertDir(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// DeleteAccount removes the local state of an ACME account, including its key.
+// It does not contact the CA.
+func (s *Store) DeleteAccount(name string) error {
+	return os.RemoveAll(s.AccountDir(name))
+}
+
+// DeleteCA removes the local state of a local CA, including its key.
+func (s *Store) DeleteCA(name string) error {
+	return os.RemoveAll(s.CADir(name))
+}
+
+var accountKeyArchiveRE = regexp.MustCompile(`^account-\d{8}T\d{6}Z\.key$`)
+
+// ListAccountKeyArchives returns the file names of the archived account keys
+// of an account, oldest first. Only regular files named like the output of
+// ArchiveAccountKey are listed.
+func (s *Store) ListAccountKeyArchives(name string) ([]string, error) {
+	entries, err := os.ReadDir(s.AccountDir(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && accountKeyArchiveRE.MatchString(e.Name()) {
+			files = append(files, e.Name())
+		}
+	}
+	return files, nil
+}
+
+// RemoveAccountKeyArchive deletes one archived account key of an account.
+func (s *Store) RemoveAccountKeyArchive(account, file string) error {
+	if !accountKeyArchiveRE.MatchString(file) {
+		return fmt.Errorf("%q is not an account key archive", file)
+	}
+	err := os.Remove(filepath.Join(s.AccountDir(account), file))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

@@ -275,6 +275,34 @@ Delete local state and remove previously deployed files if their content still m
 gibcert delete --undeploy --yes example.com
 ```
 
+## Pruning Stale State
+
+Certificates removed from the config keep their local state, and accounts and local CAs outlive the certificates that used them. `gibcert prune` finds what the config no longer uses. Review it first:
+
+```sh
+gibcert prune --dry-run
+```
+
+Each line is `remove` or `keep`, with an item ID and the reason. Run `gibcert prune` to review everything and confirm interactively, or choose categories:
+
+```sh
+gibcert prune --certs --accounts
+```
+
+Valid certificates that are no longer configured are kept unless you add `--include-valid`. To protect a single item, pass its ID from the dry run:
+
+```sh
+gibcert prune --certs --accounts --except account/ca:zerossl
+```
+
+An unattended run, for example from a timer, has to name its categories:
+
+```sh
+gibcert prune --certs --account-keys --yes
+```
+
+Prune only deletes local files. It does not revoke, undeploy, edit DNS, or deactivate accounts at the CA, and it prints a warning for artifacts that outlive a removed certificate. See the [CLI reference](cli-reference.md) for how dependencies between certificates, accounts, and CAs are resolved.
+
 ## Stored Files
 
 For each certificate, gibcert stores canonical material under the state directory:

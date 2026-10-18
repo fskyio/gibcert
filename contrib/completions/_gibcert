@@ -82,6 +82,17 @@ _gibcert() {
                 '1:old name:_gibcert_certs' \
                 '2:new name'
             ;;
+        prune)
+            _arguments \
+                '--certs[prune orphan certs that are expired, revoked, or unreadable]' \
+                '--accounts[prune accounts nothing uses]' \
+                '--cas[prune local CAs nothing uses]' \
+                '--account-keys[prune superseded account key archives]' \
+                '--include-valid[with --certs, also prune orphan certs that are still valid]' \
+                '*--except[keep this item, as printed by --dry-run]:item' \
+                '--dry-run[print what would be pruned without removing anything]' \
+                '--yes[approve removal non-interactively]'
+            ;;
         ca)
             _arguments '1: :_gibcert_ca_subcmds' '*:: :->caargs'
             case $state in
@@ -206,6 +217,7 @@ _gibcert_commands() {
         'revoke:revoke a stored certificate at the CA'
         'delete:remove local certificate state, optionally undeploying'
         'rename:rename stored certificate state'
+        'prune:remove stale local state'
         'list:list configured certificates and local status'
         'show:show certificate config and local status'
         'import:import certificate material from another client or PEM files'

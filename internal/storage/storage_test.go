@@ -554,3 +554,34 @@ func (unsupportedSigner) Public() crypto.PublicKey {
 func (unsupportedSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
 	return nil, errors.New("unsupported")
 }
+
+func TestRemoveAccountKeyArchiveOnlyRemovesArchives(t *testing.T) {
+	store := New(t.TempDir())
+	archive := "account-20260521T120000Z.key"
+	for _, f := range []string{"account.key", "account.key.next", archive} {
+		if err := os.MkdirAll(store.AccountDir("prod"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(store.AccountDir("prod"), f), []byte(f), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"account.key", "account.key.next", "../account.key", ""} {
+		if err := store.RemoveAccountKeyArchive("prod", f); err == nil {
+			t.Errorf("RemoveAccountKeyArchive(%q) succeeded, want error", f)
+		}
+	}
+	if _, err := os.Stat(store.AccountKeyPath("prod")); err != nil {
+		t.Fatalf("live account key removed: %v", err)
+	}
+	if err := store.RemoveAccountKeyArchive("prod", archive); err != nil {
+		t.Fatalf("RemoveAccountKeyArchive: %v", err)
+	}
+	if err := store.RemoveAccountKeyArchive("prod", archive); err != nil {
+		t.Fatalf("RemoveAccountKeyArchive twice: %v", err)
+	}
+	files, err := store.ListAccountKeyArchives("prod")
+	if err != nil || len(files) != 0 {
+		t.Fatalf("ListAccountKeyArchives got %v, %v; want none", files, err)
+	}
+}
