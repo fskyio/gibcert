@@ -104,6 +104,15 @@ account must already be registered locally. gibcert archives the previous
 local account.key next to the new key. For implicit accounts created by
 certificate ca references, use ca:<ca-name>.
 .TP
+.B account deactivate [\fB\-\-yes\fR] \fIACCOUNT\fR
+Deactivate an ACME account at its CA, then delete its local state. This cannot
+be undone: the CA refuses every further request signed by the account key, so
+the key can no longer revoke certificates the account issued. Refused while the
+config or any stored certificate still needs the account. The CA is the ACME
+directory recorded when the account was registered. Local state is deleted only
+after the CA reports the account as deactivated; on any other reply it is kept.
+Asks for confirmation unless \fB\-\-yes\fR is set.
+.TP
 .B ca list
 List built-in and configured CA profiles.
 .TP
@@ -185,10 +194,10 @@ Rename stored certificate state and update the stored metadata name. This does
 not edit the configuration file; if the old name is still configured, gibcert
 prints a warning.
 .TP
-.B prune [\fB\-\-certs\fR] [\fB\-\-accounts\fR] [\fB\-\-cas\fR] [\fB\-\-account\-keys\fR] [\fB\-\-include\-valid\fR] [\fB\-\-except\fR \fIID\fR]... [\fB\-\-dry\-run\fR] [\fB\-\-yes\fR]
+.B prune [\fB\-\-certs\fR] [\fB\-\-accounts\fR] [\fB\-\-cas\fR] [\fB\-\-account\-keys\fR] [\fB\-\-include\-valid\fR] [\fB\-\-deactivate\fR] [\fB\-\-except\fR \fIID\fR]... [\fB\-\-dry\-run\fR] [\fB\-\-yes\fR]
 Remove local state the config no longer uses, after printing every item
-examined and asking for confirmation. Only local files are deleted: nothing is
-revoked, undeployed, removed from DNS, or reported to a CA. Without a category
+examined and asking for confirmation. By default only local files are deleted:
+nothing is revoked, undeployed, removed from DNS, or reported to a CA. Without a category
 flag all categories are reviewed interactively; \fB\-\-yes\fR requires at least
 one. Refuses to run when the config fails to load or declares no certificates.
 .IP
@@ -202,8 +211,10 @@ prunes superseded account\-*.key archives, keeping the newest per account.
 \fB\-\-except\fR keeps one item and is repeatable. Items are named cert/NAME,
 account/NAME, ca/NAME, and account\-key/ACCOUNT/FILE, as printed by
 \fB\-\-dry\-run\fR, which is read\-only. An ID matching no item is an error.
-Account removal is local only: the registration at the CA stays and the account
-key is deleted permanently. Files are deleted, not wiped.
+With \fB\-\-deactivate\fR, accounts selected for removal are first deactivated at
+their CA, and keep their local state if that fails. Without it, account removal
+is local only: the registration at the CA stays and the account key is deleted
+permanently. Files are deleted, not wiped.
 .TP
 .B list
 List configured certificates with compact certificate, issuer, renewal, and

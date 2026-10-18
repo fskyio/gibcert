@@ -301,7 +301,21 @@ An unattended run, for example from a timer, has to name its categories:
 gibcert prune --certs --account-keys --yes
 ```
 
-Prune only deletes local files. It does not revoke, undeploy, edit DNS, or deactivate accounts at the CA, and it prints a warning for artifacts that outlive a removed certificate. See the [CLI reference](cli-reference.md) for how dependencies between certificates, accounts, and CAs are resolved.
+By default prune only deletes local files. It does not revoke, undeploy, edit DNS, or deactivate accounts at the CA, and it prints a warning for artifacts that outlive a removed certificate. See the [CLI reference](cli-reference.md) for how dependencies between certificates, accounts, and CAs are resolved.
+
+To also deactivate the accounts it removes at their CA, add `--deactivate`. This cannot be undone: the CA refuses every further request signed by the account key, so it can no longer revoke what the account issued.
+
+```sh
+gibcert prune --certs --accounts --deactivate
+```
+
+Deactivate a single account, for example one whose key was compromised or decommissioned:
+
+```sh
+gibcert account deactivate ca:zerossl
+```
+
+gibcert refuses while the config or any stored certificate still needs the account, so revoke or delete those certificates first. The local state is deleted only after the CA confirms the deactivation.
 
 ## Stored Files
 

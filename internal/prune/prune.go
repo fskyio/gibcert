@@ -14,11 +14,13 @@
 // limitations under the License.
 
 // Package prune finds local state that no longer belongs to the config and
-// removes the parts the caller selected. Scanning is offline and read-only;
-// Apply only deletes local files.
+// removes the parts the caller selected. Scanning is offline and read-only.
+// Apply deletes local files and, only when the caller supplies the hook,
+// deactivates accounts at their CA first.
 package prune
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -175,9 +177,19 @@ func Scan(cfg *config.Config, store *storage.Store, now time.Time, opts Options)
 	return report, nil
 }
 
+// ApplyOptions configures Apply.
+type ApplyOptions struct {
+	// DeactivateAccount, when set, runs for every account being removed,
+	// before its local state is deleted. It receives the account name and the
+	// ACME directory recorded for it (empty if unknown). An error keeps the
+	// account's local state, so the account stays orphaned and a later run
+	// can retry.
+	DeactivateAccount func(ctx context.Context, name, directory string) error
+}
+
 // Apply deletes the items marked for removal, continuing past failures. The
 // caller must hold the state lock from Scan through Apply.
-func Apply(report Report, store *storage.Store) []Result {
+func Apply(ctx context.Context, report Report, store *storage.Store, opts ApplyOptions) []Result {
 	var results []Result
 	for _, it := range report.Items {
 		if !it.Remove {
@@ -188,7 +200,7 @@ func Apply(report Report, store *storage.Store) []Result {
 		case KindCert:
 			err = store.DeleteCert(it.Name)
 		case KindAccount:
-			err = removeAccount(store, it)
+			err = removeAccount(ctx, store, it, opts)
 		case KindCA:
 			err = store.DeleteCA(it.Name)
 		case KindAccountKey:
@@ -200,10 +212,15 @@ func Apply(report Report, store *storage.Store) []Result {
 	return results
 }
 
-// removeAccount deletes the local state of an account. The account key lives
-// there, so any step that needs the key (such as contacting the CA) has to
-// happen before this deletion, and a failure of such a step has to skip it.
-func removeAccount(store *storage.Store, it Item) error {
+// removeAccount removes an account. The account key lives in its local state,
+// so deactivation at the CA has to come first, and a failure of it has to skip
+// the deletion: once the key is gone nothing can deactivate the account.
+func removeAccount(ctx context.Context, store *storage.Store, it Item, opts ApplyOptions) error {
+	if opts.DeactivateAccount != nil {
+		if err := opts.DeactivateAccount(ctx, it.Name, it.Directory); err != nil {
+			return fmt.Errorf("deactivate at the CA (local state kept): %w", err)
+		}
+	}
 	return store.DeleteAccount(it.Name)
 }
 

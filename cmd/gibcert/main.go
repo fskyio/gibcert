@@ -99,12 +99,16 @@ delete flags:
   --reason REASON       revocation reason for --revoke (default: unspecified)
   --yes                 approve deletion/revocation non-interactively
 
+account deactivate flags:
+  --yes                 approve deactivation non-interactively
+
 prune flags:
   --certs               prune orphan certs that are expired, revoked, or unreadable
   --accounts            prune accounts nothing uses
   --cas                 prune local CAs nothing uses
   --account-keys        prune superseded account key archives (newest is kept)
   --include-valid       with --certs, also prune orphan certs that are still valid
+  --deactivate          with --accounts, deactivate accounts at their CA before removing them
   --except ID           keep this item, as printed by --dry-run (repeatable)
   --dry-run             print what would be pruned without removing anything
   --yes                 approve removal non-interactively (requires a selection)
@@ -255,7 +259,7 @@ func cmdHelp(args []string) int {
 	case "renew":
 		fmt.Println("usage: gibcert renew [--max-jitter DURATION] [--no-jitter] [--verbose]")
 	case "account":
-		fmt.Println("usage: gibcert account rotate-key <account>")
+		fmt.Println(accountUsage)
 	case "ca":
 		fmt.Println("usage: gibcert ca list|show <ca>|export [--der] <ca>")
 	case "dns-persist":
@@ -302,18 +306,22 @@ func cmdVersion(args []string) int {
 	return 0
 }
 
+const accountUsage = "usage: gibcert account rotate-key <account>\n       gibcert account deactivate [--yes] <account>"
+
 func cmdAccount(p *paths.Paths, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gibcert account rotate-key <account>")
+		fmt.Fprintln(os.Stderr, accountUsage)
 		return 2
 	}
 	switch args[0] {
 	case "rotate-key":
 		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: gibcert account rotate-key <account>")
+			fmt.Fprintln(os.Stderr, accountUsage)
 			return 2
 		}
 		return cmdAccountRotateKey(p, args[1])
+	case "deactivate":
+		return cmdAccountDeactivate(p, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "gibcert: unknown account command %q\n", args[0])
 		return 2

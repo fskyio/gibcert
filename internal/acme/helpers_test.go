@@ -430,6 +430,92 @@ func TestAccountHTTPFlowsWithFakeACMEServer(t *testing.T) {
 	}
 }
 
+func TestDeactivateAccountPostsOnlyTheStatus(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serverURL string
+	var posts []jwsJSON
+	deactivated := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(replayNonce, "nonce")
+		switch r.URL.Path {
+		case "/dir":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(Directory{
+				NewNonce:   serverURL + "/nonce",
+				NewAccount: serverURL + "/new-account",
+				NewOrder:   serverURL + "/new-order",
+				RevokeCert: serverURL + "/revoke",
+				KeyChange:  serverURL + "/key-change",
+			})
+		case "/nonce":
+			w.WriteHeader(http.StatusOK)
+		case "/acct/1":
+			posts = append(posts, parseJWS(t, mustReadAll(t, r)))
+			if !deactivated {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"type":"`+ProblemTypeUnauthorized+`","detail":"account is deactivated"}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(Account{Status: StatusDeactivated})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client := &Client{Directory: server.URL + "/dir"}
+	account := Account{
+		PrivateKey: key,
+		Location:   server.URL + "/acct/1",
+		Contact:    []string{"mailto:admin@example.com"},
+	}
+	got, err := client.DeactivateAccount(context.Background(), account)
+	if err != nil {
+		t.Fatalf("DeactivateAccount: %v", err)
+	}
+	if got.Status != StatusDeactivated || got.Location != account.Location || got.PrivateKey != account.PrivateKey {
+		t.Fatalf("DeactivateAccount returned %#v", got)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("POSTs got %d, want 1", len(posts))
+	}
+	payload := decodeJSONPart(t, posts[0].Payload)
+	if len(payload) != 1 || payload["status"] != "deactivated" {
+		t.Fatalf("payload got %v, want only status=deactivated", payload)
+	}
+	header := decodeJSONPart(t, posts[0].Protected)
+	if header["kid"] != account.Location || header["url"] != account.Location {
+		t.Fatalf("protected header got %v, want kid and url %q", header, account.Location)
+	}
+
+	// A refusal comes back as the server's problem document.
+	deactivated = false
+	_, err = client.DeactivateAccount(context.Background(), account)
+	var problem Problem
+	if !errors.As(err, &problem) || problem.Type != ProblemTypeUnauthorized {
+		t.Fatalf("refused DeactivateAccount err = %v, want an unauthorized Problem", err)
+	}
+
+	if _, err := client.DeactivateAccount(context.Background(), Account{PrivateKey: key}); err == nil {
+		t.Fatal("DeactivateAccount without an account URL succeeded")
+	}
+}
+
+func mustReadAll(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestHTTPHeaderHelpers(t *testing.T) {
 	resp := &http.Response{Header: make(http.Header)}
 	resp.Header.Add("Link", `<https://ca.example/issuer>; rel="up", <https://ca.example/terms>; rel="terms-of-service"`)

@@ -182,11 +182,15 @@ func loadEABHMACKey(ctx context.Context, eab *EABOptions) ([]byte, error) {
 }
 
 func LoadExisting(ctx context.Context, store *storage.Store, accountName, directoryURL string) (*Client, error) {
+	return loadExisting(ctx, store, accountName, directoryURL, nil)
+}
+
+func loadExisting(ctx context.Context, store *storage.Store, accountName, directoryURL string, httpClient *http.Client) (*Client, error) {
 	key, err := storage.ReadKey(store.AccountKeyPath(accountName))
 	if err != nil {
 		return nil, fmt.Errorf("read account key: %w", err)
 	}
-	client := newACMEClient(directoryURL, nil)
+	client := newACMEClient(directoryURL, httpClient)
 	account := acme.Account{PrivateKey: key}
 
 	if meta, err := store.LoadAccountMeta(accountName); err == nil && meta.URL != "" {
@@ -252,6 +256,29 @@ func RotateAccountKey(ctx context.Context, store *storage.Store, accountName, di
 		fmt.Fprintf(out, "archived previous account key: %s\n", archive)
 	}
 	fmt.Fprintf(out, "rotated account key for %s\n", accountName)
+	return nil
+}
+
+// DeactivateAccount deactivates an account at the CA. This cannot be undone:
+// the CA refuses every further request signed by the account key, so the
+// account can no longer order certificates or revoke the ones it issued. Local
+// state is not touched; the caller removes it once this returns nil.
+//
+// The reply must report the account as deactivated. Anything else is an
+// error, so a caller never discards the key of an account that may still be
+// live.
+func DeactivateAccount(ctx context.Context, store *storage.Store, accountName, directoryURL string, httpClient *http.Client) error {
+	client, err := loadExisting(ctx, store, accountName, directoryURL, httpClient)
+	if err != nil {
+		return err
+	}
+	deactivated, err := client.acme.DeactivateAccount(ctx, client.account)
+	if err != nil {
+		return fmt.Errorf("deactivate account: %w", err)
+	}
+	if deactivated.Status != acme.StatusDeactivated {
+		return fmt.Errorf("deactivate account: CA reported status %q, want %q", deactivated.Status, acme.StatusDeactivated)
+	}
 	return nil
 }
 

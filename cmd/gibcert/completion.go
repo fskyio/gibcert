@@ -86,12 +86,12 @@ _gibcert() {
         esac
         ;;
     prune)
-        COMPREPLY=($(compgen -W "--certs --accounts --cas --account-keys --include-valid --except --dry-run --yes" -- "$cur"))
+        COMPREPLY=($(compgen -W "--certs --accounts --cas --account-keys --include-valid --deactivate --except --dry-run --yes" -- "$cur"))
         ;;
     account)
         case $cword in
-        2) COMPREPLY=($(compgen -W "rotate-key" -- "$cur")) ;;
-        3) [[ ${words[2]} == "rotate-key" ]] && COMPREPLY=($(compgen -W "$(gibcert __complete accounts 2>/dev/null)" -- "$cur")) ;;
+        2) COMPREPLY=($(compgen -W "rotate-key deactivate" -- "$cur")) ;;
+        3) [[ ${words[2]} == @(rotate-key|deactivate) ]] && COMPREPLY=($(compgen -W "$(gibcert __complete accounts 2>/dev/null)" -- "$cur")) ;;
         esac
         ;;
     ca)
@@ -175,6 +175,11 @@ _gibcert() {
 				rotate-key)
 					_arguments '1: :_gibcert_accounts'
 					;;
+				deactivate)
+					_arguments \
+						'--yes[approve deactivation non-interactively]' \
+						'1: :_gibcert_accounts'
+					;;
 				esac
 				;;
 			esac
@@ -226,6 +231,7 @@ _gibcert() {
                 '--cas[prune local CAs nothing uses]' \
                 '--account-keys[prune superseded account key archives]' \
                 '--include-valid[with --certs, also prune orphan certs that are still valid]' \
+                '--deactivate[with --accounts, deactivate accounts at their CA before removing them]' \
                 '*--except[keep this item, as printed by --dry-run]:item' \
                 '--dry-run[print what would be pruned without removing anything]' \
                 '--yes[approve removal non-interactively]'
@@ -389,7 +395,7 @@ _gibcert_ca_subcmds() {
 
 _gibcert_account_subcmds() {
     local -a subcmds
-    subcmds=('rotate-key:rotate an ACME account key')
+    subcmds=('rotate-key:rotate an ACME account key' 'deactivate:deactivate an ACME account at its CA')
     _describe 'subcommand' subcmds
 }
 
@@ -488,8 +494,10 @@ complete -c gibcert -n '__fish_seen_subcommand_from renew' -l no-jitter -d 'disa
 complete -c gibcert -n '__fish_seen_subcommand_from renew' -l verbose -d 'print renewal and deployment activity'
 
 # account subcommands and account name arg
-complete -c gibcert -n '__fish_seen_subcommand_from account; and not __fish_seen_subcommand_from rotate-key' -a rotate-key -d 'rotate an ACME account key'
-complete -c gibcert -n '__fish_seen_subcommand_from account; and __fish_seen_subcommand_from rotate-key' -a '(gibcert __complete accounts 2>/dev/null)'
+complete -c gibcert -n '__fish_seen_subcommand_from account; and not __fish_seen_subcommand_from rotate-key deactivate' -a rotate-key -d 'rotate an ACME account key'
+complete -c gibcert -n '__fish_seen_subcommand_from account; and not __fish_seen_subcommand_from rotate-key deactivate' -a deactivate -d 'deactivate an ACME account at its CA'
+complete -c gibcert -n '__fish_seen_subcommand_from account; and __fish_seen_subcommand_from deactivate' -l yes -d 'approve deactivation non-interactively'
+complete -c gibcert -n '__fish_seen_subcommand_from account; and __fish_seen_subcommand_from rotate-key deactivate' -a '(gibcert __complete accounts 2>/dev/null)'
 
 # ca subcommands and CA name arg
 complete -c gibcert -n '__fish_seen_subcommand_from ca; and not __fish_seen_subcommand_from list show export' -a list -d 'list CA profiles'
@@ -541,6 +549,7 @@ complete -c gibcert -n '__fish_seen_subcommand_from prune' -l accounts -d 'prune
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l cas -d 'prune local CAs nothing uses'
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l account-keys -d 'prune superseded account key archives'
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l include-valid -d 'with --certs, also prune orphan certs that are still valid'
+complete -c gibcert -n '__fish_seen_subcommand_from prune' -l deactivate -d 'with --accounts, deactivate accounts at their CA before removing them'
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l except -d 'keep this item, as printed by --dry-run' -r
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l dry-run -d 'print what would be pruned without removing anything'
 complete -c gibcert -n '__fish_seen_subcommand_from prune' -l yes -d 'approve removal non-interactively'
@@ -656,6 +665,14 @@ func cmdInternalComplete(p *paths.Paths, args []string) int {
 			if !seen[name] {
 				names = append(names, name)
 				seen[name] = true
+			}
+		}
+		if stored, err := storage.New(p.State).ListAccountNames(); err == nil {
+			for _, name := range stored {
+				if !seen[name] {
+					names = append(names, name)
+					seen[name] = true
+				}
 			}
 		}
 		sort.Strings(names)

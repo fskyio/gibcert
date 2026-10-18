@@ -166,6 +166,40 @@ func (c *Client) UpdateAccount(ctx context.Context, account Account) (Account, e
 	return c.postAccount(ctx, account.Location, accountObject{Account: account})
 }
 
+// DeactivateAccount deactivates an account on the ACME server. This cannot be
+// undone: the server refuses every further request signed by the account key.
+//
+// "A client can deactivate an account by posting a signed update to the
+// account URL with a status field of "deactivated"." §7.3.6
+//
+// The payload is exactly {"status":"deactivated"}. UpdateAccount is not used
+// because it would send every other populated Account field as well.
+//
+// This method uses the account.Location value as the account URL. The
+// returned account carries the status the server reported; the caller decides
+// whether that counts as deactivated.
+func (c *Client) DeactivateAccount(ctx context.Context, account Account) (Account, error) {
+	if err := c.provision(ctx); err != nil {
+		return account, err
+	}
+	if account.Location == "" {
+		return account, fmt.Errorf("empty account url")
+	}
+
+	deactivate := struct {
+		Status string `json:"status"`
+	}{Status: StatusDeactivated}
+
+	var updated Account
+	if _, err := c.httpPostJWS(ctx, account.PrivateKey, account.Location, account.Location, deactivate, &updated); err != nil {
+		return account, err
+	}
+	updated.Location = account.Location
+	updated.PrivateKey = account.PrivateKey
+
+	return updated, nil
+}
+
 type keyChangeRequest struct {
 	Account string          `json:"account"`
 	OldKey  json.RawMessage `json:"oldKey"`

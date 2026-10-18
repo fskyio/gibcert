@@ -95,6 +95,18 @@ Rotate an existing ACME account key using the ACME account key rollover flow.
 
 The account must already be registered locally. The previous local `account.key` is archived next to the new key. For implicit accounts created by using `ca NAME` directly on a certificate, pass `ca:<ca-name>`.
 
+### `gibcert account deactivate [--yes] <account>`
+
+Deactivate an ACME account at its CA, then delete its local state. This cannot be undone: the CA refuses every further request signed by the account key, and ACME has no way to reactivate an account. Certificates the account issued stay valid, but the account key can no longer revoke them.
+
+The account is refused while anything still needs it: a declaration in the config, a configured certificate that issues through it as primary or failover issuer, or any stored certificate that records it, even an expired one. Remove it from the config and revoke or delete those certificates first; `gibcert prune --certs --accounts --deactivate` can do the deleting and the deactivation in one run. The CA is the ACME directory recorded when the account was registered, so accounts that are no longer in the config can be deactivated. For implicit accounts, pass `ca:<ca-name>`.
+
+gibcert asks for confirmation unless `--yes` is given. Local state is deleted only after the CA reports the account as `deactivated`. If the CA refuses or answers anything else, the error is printed and the local state is kept; CAs differ in whether they support deactivation. If the account is already deactivated at the CA, remove its local state with `gibcert prune --accounts` instead.
+
+| Flag | Description |
+| --- | --- |
+| `--yes` | Approve deactivation non-interactively. |
+
 ### `gibcert ca list`
 
 List built-in and configured CA profiles. Local CAs also show readiness and expiry.
@@ -206,9 +218,9 @@ Rename stored certificate state and update the stored metadata name.
 
 This command does not edit the configuration file. If the old name is still configured, gibcert prints a warning so you can update the matching `certificate` block.
 
-### `gibcert prune [--certs] [--accounts] [--cas] [--account-keys] [--include-valid] [--except ID]... [--dry-run] [--yes]`
+### `gibcert prune [--certs] [--accounts] [--cas] [--account-keys] [--include-valid] [--deactivate] [--except ID]... [--dry-run] [--yes]`
 
-Remove local state the config no longer uses. Prune prints every item it examined and asks for confirmation before deleting anything. It only deletes local files: it does not revoke certificates, remove deployed files, edit DNS, or contact any CA.
+Remove local state the config no longer uses. Prune prints every item it examined and asks for confirmation before deleting anything. By default it only deletes local files: it does not revoke certificates, remove deployed files, edit DNS, or contact any CA. `--deactivate` is the one exception, described below.
 
 Without a category flag, prune reviews all four categories interactively. `--yes` requires at least one category flag, so an unattended run has to name what it may delete. Prune refuses to run if the config fails to load or declares no certificates, because a wrong `--config` would make every stored certificate look orphaned.
 
@@ -217,6 +229,7 @@ Without a category flag, prune reviews all four categories interactively. `--yes
 | `--certs` | Prune certificate state that is not in the config and is expired, revoked, or has missing or unreadable metadata. |
 | `--include-valid` | With `--certs`, also prune orphan certificates that are still valid. Without it they are listed and kept. |
 | `--accounts` | Prune accounts nothing uses. |
+| `--deactivate` | With `--accounts`, deactivate each account at its CA before deleting its local state. This cannot be undone. |
 | `--cas` | Prune local CAs nothing uses. |
 | `--account-keys` | Prune superseded `account-*.key` archives left by `account rotate-key`, keeping the newest archive of each account. |
 | `--except ID` | Keep this item. Repeatable. IDs are printed by `--dry-run`. An ID that matches no item is an error. |
@@ -237,9 +250,11 @@ Items are identified as `cert/NAME`, `account/NAME`, `ca/NAME`, and `account-key
 
 Accounts and local CAs are only removed when nothing that stays needs them. An account is in use when it is declared in an `account` block, when a configured certificate issues through it as primary or failover issuer (the only way an implicit `ca:<ca>` account counts), or when a certificate that stays records it in its metadata. A local CA is in use when it is declared in a `ca` block or when a certificate that stays was signed by it. What stays depends on your selection: `--except cert/NAME` also keeps the account and CA that certificate needs, and `--accounts` without `--certs` keeps every account an orphan certificate still needs.
 
+`--deactivate` is the only way prune contacts a CA. For every account selected for removal it deactivates the account at the CA recorded for it, then deletes the account's local state (see `gibcert account deactivate`). An account whose deactivation fails keeps its local state, the other items are still processed, and prune exits with status `1`, so a later run can retry. If an account is already deactivated at the CA, run prune without `--deactivate` to remove its local state. A dry run never contacts a CA, and `--yes` still requires `--accounts` to be named.
+
 Limits to know before confirming:
 
-- Account removal is local only. The registration at the CA stays, and the account key is deleted permanently.
+- Without `--deactivate`, account removal is local only. The registration at the CA stays, and the account key is deleted permanently.
 - Files are deleted, not wiped. Private keys can remain recoverable from the storage medium.
 - Removing a certificate leaves its published TLSA records, deployed files, and CA-side validity alone. Prune prints a warning for each of these. Use `gibcert delete --undeploy --revoke` when they matter.
 - Prune never removes `account.key.next` or `privkey-next.pem` on their own; a staged key only goes together with the whole certificate or account directory it belongs to. It also ignores symlinks and files that do not match the categories above.

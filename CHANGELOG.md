@@ -15,7 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`--account-keys`). It prints every item with a reason, `--dry-run` previews
   without touching state, and `--except ID` keeps individual items. Accounts and
   CAs that a surviving certificate still needs are kept. Account removal is
-  local only. `--yes` requires naming at least one category.
+  local only unless `--deactivate` is given. `--yes` requires naming at least
+  one category.
+- `gibcert account deactivate ACCOUNT` deactivates an ACME account at its CA and
+  then deletes its local state. It refuses accounts the config or a stored
+  certificate still needs, and keeps the local state unless the CA reports the
+  account as deactivated. `gibcert prune --accounts --deactivate` does the same
+  for every account it removes.
 
 ## [0.3.0-rc.1] - 2026-10-11
 

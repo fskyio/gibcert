@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ import (
 	"gitfield.org/fsky/gibcert/internal/storage"
 )
 
-const pruneUsage = "usage: gibcert prune [--certs] [--accounts] [--cas] [--account-keys] [--include-valid] [--except ID]... [--dry-run] [--yes]"
+const pruneUsage = "usage: gibcert prune [--certs] [--accounts] [--cas] [--account-keys] [--include-valid] [--deactivate] [--except ID]... [--dry-run] [--yes]"
 
 func cmdPrune(p *paths.Paths, args []string) int {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
@@ -38,11 +39,13 @@ func cmdPrune(p *paths.Paths, args []string) int {
 	var except stringList
 	dryRun := false
 	yes := false
+	deactivate := false
 	fs.BoolVar(&opts.Certs, "certs", false, "prune orphan certificates that are expired, revoked, or unreadable")
 	fs.BoolVar(&opts.Accounts, "accounts", false, "prune accounts nothing uses")
 	fs.BoolVar(&opts.CAs, "cas", false, "prune local CAs nothing uses")
 	fs.BoolVar(&opts.AccountKeys, "account-keys", false, "prune superseded account key archives")
 	fs.BoolVar(&opts.IncludeValid, "include-valid", false, "with --certs, also prune orphan certificates that are still valid")
+	fs.BoolVar(&deactivate, "deactivate", false, "with --accounts, deactivate accounts at their CA before removing them")
 	fs.Var(&except, "except", "keep this item, as printed by --dry-run (repeatable)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be pruned without removing anything")
 	fs.BoolVar(&yes, "yes", false, "approve removal non-interactively")
@@ -66,6 +69,10 @@ func cmdPrune(p *paths.Paths, args []string) int {
 	}
 	if opts.IncludeValid && !opts.Certs {
 		logErrorMessage("--include-valid requires --certs")
+		return 2
+	}
+	if deactivate && !opts.Accounts {
+		logErrorMessage("--deactivate requires --accounts")
 		return 2
 	}
 
@@ -96,12 +103,23 @@ func cmdPrune(p *paths.Paths, args []string) int {
 		return 1
 	}
 	removals := report.Removals()
-	printPruneReport(os.Stdout, report)
+	printPruneReport(os.Stdout, report, deactivate)
 	if len(removals) == 0 {
 		fmt.Println("nothing to prune")
 		return 0
 	}
 	fmt.Printf("%d item(s) to remove. Private keys are deleted, not wiped.\n", len(removals))
+	if deactivate {
+		accounts := 0
+		for _, it := range removals {
+			if it.Kind == prune.KindAccount {
+				accounts++
+			}
+		}
+		if accounts > 0 {
+			fmt.Printf("%d account(s) will be deactivated at their CA first. This cannot be undone.\n", accounts)
+		}
+	}
 	if dryRun {
 		return 0
 	}
@@ -117,9 +135,20 @@ func cmdPrune(p *paths.Paths, args []string) int {
 		}
 	}
 
+	var applyOpts prune.ApplyOptions
+	if deactivate {
+		applyOpts.DeactivateAccount = func(ctx context.Context, name, directory string) error {
+			if err := deactivateAccountAtCA(ctx, store, name, directory); err != nil {
+				return err
+			}
+			fmt.Printf("deactivated %s at %s\n", name, directory)
+			return nil
+		}
+	}
+
 	code := 0
 	removed := 0
-	for _, r := range prune.Apply(report, store) {
+	for _, r := range prune.Apply(context.Background(), report, store, applyOpts) {
 		if r.Err != nil {
 			logError(fmt.Errorf("remove %s: %w", r.Item.ID(), r.Err))
 			code = 1
@@ -132,7 +161,7 @@ func cmdPrune(p *paths.Paths, args []string) int {
 	return code
 }
 
-func printPruneReport(w io.Writer, report prune.Report) {
+func printPruneReport(w io.Writer, report prune.Report, deactivate bool) {
 	width := 0
 	for _, it := range report.Items {
 		if n := len(it.ID()); n > width {
@@ -153,7 +182,14 @@ func printPruneReport(w io.Writer, report prune.Report) {
 			if it.Directory != "" {
 				fmt.Fprintf(w, "        directory: %s\n", it.Directory)
 			}
-			fmt.Fprintln(w, "        note: local only; the CA registration stays and the account key is deleted permanently")
+			switch {
+			case !deactivate:
+				fmt.Fprintln(w, "        note: local only; the CA registration stays and the account key is deleted permanently")
+			case it.Directory == "":
+				fmt.Fprintln(w, "        note: no ACME directory recorded, so deactivation will fail and the local state will be kept")
+			default:
+				fmt.Fprintln(w, "        note: deactivated at the CA first, then the account key is deleted permanently")
+			}
 		case prune.KindCA:
 			fmt.Fprintln(w, "        note: the CA key is deleted permanently")
 		}

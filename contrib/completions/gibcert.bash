@@ -43,12 +43,12 @@ _gibcert() {
         esac
         ;;
     prune)
-        COMPREPLY=($(compgen -W "--certs --accounts --cas --account-keys --include-valid --except --dry-run --yes" -- "$cur"))
+        COMPREPLY=($(compgen -W "--certs --accounts --cas --account-keys --include-valid --deactivate --except --dry-run --yes" -- "$cur"))
         ;;
     account)
         case $cword in
-        2) COMPREPLY=($(compgen -W "rotate-key" -- "$cur")) ;;
-        3) [[ ${words[2]} == "rotate-key" ]] && COMPREPLY=($(compgen -W "$(gibcert __complete accounts 2>/dev/null)" -- "$cur")) ;;
+        2) COMPREPLY=($(compgen -W "rotate-key deactivate" -- "$cur")) ;;
+        3) [[ ${words[2]} == @(rotate-key|deactivate) ]] && COMPREPLY=($(compgen -W "$(gibcert __complete accounts 2>/dev/null)" -- "$cur")) ;;
         esac
         ;;
     ca)

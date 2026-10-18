@@ -16,6 +16,7 @@
 package prune
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -272,7 +273,7 @@ func TestScanAccountKeyArchives(t *testing.T) {
 	}
 
 	report = scan(t, cfg, store, Options{AccountKeys: true})
-	for _, r := range Apply(report, store) {
+	for _, r := range Apply(context.Background(), report, store, ApplyOptions{}) {
 		if r.Err != nil {
 			t.Fatalf("Apply %s: %v", r.Item.ID(), r.Err)
 		}
@@ -364,7 +365,7 @@ func TestApplyRemovesOnlyMarkedItems(t *testing.T) {
 	writeFile(t, store.CertPaths("expired.example").KeyNext, "staged")
 
 	report := scan(t, cfg, store, Options{Certs: true, Accounts: true, CAs: true})
-	results := Apply(report, store)
+	results := Apply(context.Background(), report, store, ApplyOptions{})
 	if len(results) != 3 {
 		t.Fatalf("Apply returned %d results, want 3: %+v", len(results), results)
 	}
@@ -405,4 +406,53 @@ func TestScanNeverFollowsSymlinks(t *testing.T) {
 	}
 	// With the symlinked archive ignored only one real archive remains, so
 	// there is nothing superseded to list.
+}
+
+func TestApplyDeactivatesAccountsBeforeDeletingThem(t *testing.T) {
+	store := newStore(t)
+	saveCert(t, store, "expired.example", storage.CertMeta{NotAfter: now.Add(-time.Hour)})
+	for _, name := range []string{"ca:google", "ca:buypass"} {
+		saveAccount(t, store, name)
+	}
+	saveCA(t, store, "gone")
+
+	var calls []string
+	opts := ApplyOptions{DeactivateAccount: func(_ context.Context, name, directory string) error {
+		// The CA is contacted while the account key still exists.
+		if !exists(store.AccountKeyPath(name)) {
+			t.Errorf("%s: account key already gone when deactivating", name)
+		}
+		calls = append(calls, name+" "+directory)
+		if name == "ca:buypass" {
+			return errors.New("CA refused")
+		}
+		return nil
+	}}
+	report := scan(t, baseConfig(), store, Options{Certs: true, Accounts: true, CAs: true})
+	results := Apply(context.Background(), report, store, opts)
+
+	wantCalls := "ca:buypass https://ca.example/ca:buypass|ca:google https://ca.example/ca:google"
+	if got := strings.Join(calls, "|"); got != wantCalls {
+		t.Fatalf("deactivate calls = %q, want %q", got, wantCalls)
+	}
+	errs := map[string]error{}
+	for _, r := range results {
+		errs[r.Item.ID()] = r.Err
+	}
+	if err := errs["account/ca:buypass"]; err == nil || !strings.Contains(err.Error(), "CA refused") {
+		t.Errorf("refused account err = %v, want the CA's refusal", err)
+	}
+	if err := errs["account/ca:google"]; err != nil {
+		t.Errorf("deactivated account err = %v", err)
+	}
+	if !exists(store.AccountDir("ca:buypass")) {
+		t.Error("local state of an account the CA refused to deactivate was deleted")
+	}
+	if exists(store.AccountDir("ca:google")) {
+		t.Error("local state of a deactivated account was kept")
+	}
+	// A refusal does not hold back anything else.
+	if exists(store.CertDir("expired.example")) || exists(store.CADir("gone")) {
+		t.Error("other items were not removed")
+	}
 }

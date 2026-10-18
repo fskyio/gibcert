@@ -193,6 +193,31 @@ func TestPebbleEABLoadOrRegister(t *testing.T) {
 	}
 }
 
+func TestPebbleAccountDeactivation(t *testing.T) {
+	directoryURL := pebbleDirectoryURL(t)
+	store := newPebbleStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const name = "pebble-deactivate"
+	if _, err := LoadOrRegister(ctx, store, AccountOptions{
+		Name:         name,
+		DirectoryURL: directoryURL,
+		Email:        "test@example.invalid",
+		HTTPClient:   newPebbleHTTPClient(),
+	}); err != nil {
+		t.Fatalf("LoadOrRegister: %v", err)
+	}
+	if err := DeactivateAccount(ctx, store, name, directoryURL, newPebbleHTTPClient()); err != nil {
+		t.Fatalf("DeactivateAccount: %v", err)
+	}
+	// The CA refuses everything signed by the account key from now on, so a
+	// second deactivation must fail instead of being accepted again.
+	if err := DeactivateAccount(ctx, store, name, directoryURL, newPebbleHTTPClient()); err == nil {
+		t.Fatal("deactivated account was accepted by the CA again")
+	}
+}
+
 func TestPebbleEABRequiredRejectsMissingBinding(t *testing.T) {
 	directoryURL := pebbleEABDirectoryURL(t)
 	store := newPebbleStore(t)

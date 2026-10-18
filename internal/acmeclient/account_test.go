@@ -383,3 +383,111 @@ func TestRotateAccountKey(t *testing.T) {
 		t.Fatalf("output %q does not mention rotation", out.String())
 	}
 }
+
+func TestDeactivateAccount(t *testing.T) {
+	cases := []struct {
+		name    string
+		reply   func(w http.ResponseWriter)
+		wantErr string
+	}{
+		{
+			name: "deactivated",
+			reply: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"status":"deactivated"}`)
+			},
+		},
+		{
+			name: "reply still valid",
+			reply: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"status":"valid"}`)
+			},
+			wantErr: `reported status "valid"`,
+		},
+		{
+			name: "reply without status",
+			reply: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{}`)
+			},
+			wantErr: `reported status ""`,
+		},
+		{
+			name: "refused",
+			reply: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusForbidden)
+				io.WriteString(w, `{"type":"urn:ietf:params:acme:error:unauthorized","detail":"not allowed"}`)
+			},
+			wantErr: "unauthorized",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var accountPosts int
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Replay-Nonce", "nonce-value")
+				switch r.URL.Path {
+				case "/directory":
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"newNonce":"`+srv.URL+`/nonce","newAccount":"`+srv.URL+`/new-account","newOrder":"`+srv.URL+`/new-order","revokeCert":"`+srv.URL+`/revoke","keyChange":"`+srv.URL+`/key-change"}`)
+				case "/nonce":
+					w.WriteHeader(http.StatusOK)
+				case "/acct/1":
+					accountPosts++
+					tc.reply(w)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			store := storage.New(t.TempDir())
+			key, err := storage.GenerateAccountKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(store.AccountDir("default"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.WriteKey(store.AccountKeyPath("default"), key); err != nil {
+				t.Fatal(err)
+			}
+			if err := saveAccountMeta(store, "default", srv.URL+"/acct/1", "admin@example.com", srv.URL+"/directory"); err != nil {
+				t.Fatal(err)
+			}
+
+			err = DeactivateAccount(context.Background(), store, "default", srv.URL+"/directory", nil)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("DeactivateAccount: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("DeactivateAccount err = %v, want it to contain %q", err, tc.wantErr)
+			}
+			if accountPosts != 1 {
+				t.Fatalf("account POSTs got %d, want 1", accountPosts)
+			}
+			// Deleting local state is the caller's call, after success.
+			if _, err := storage.ReadKey(store.AccountKeyPath("default")); err != nil {
+				t.Fatalf("account key touched: %v", err)
+			}
+			if _, err := store.LoadAccountMeta("default"); err != nil {
+				t.Fatalf("account metadata touched: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeactivateAccountWithoutKeyNeverContactsTheCA(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to %s", r.URL.Path)
+	}))
+	defer srv.Close()
+	store := storage.New(t.TempDir())
+	err := DeactivateAccount(context.Background(), store, "default", srv.URL+"/directory", nil)
+	if err == nil || !strings.Contains(err.Error(), "read account key") {
+		t.Fatalf("DeactivateAccount err = %v, want a read account key error", err)
+	}
+}

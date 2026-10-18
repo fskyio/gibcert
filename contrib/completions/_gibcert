@@ -38,6 +38,11 @@ _gibcert() {
 				rotate-key)
 					_arguments '1: :_gibcert_accounts'
 					;;
+				deactivate)
+					_arguments \
+						'--yes[approve deactivation non-interactively]' \
+						'1: :_gibcert_accounts'
+					;;
 				esac
 				;;
 			esac
@@ -89,6 +94,7 @@ _gibcert() {
                 '--cas[prune local CAs nothing uses]' \
                 '--account-keys[prune superseded account key archives]' \
                 '--include-valid[with --certs, also prune orphan certs that are still valid]' \
+                '--deactivate[with --accounts, deactivate accounts at their CA before removing them]' \
                 '*--except[keep this item, as printed by --dry-run]:item' \
                 '--dry-run[print what would be pruned without removing anything]' \
                 '--yes[approve removal non-interactively]'
@@ -252,7 +258,7 @@ _gibcert_ca_subcmds() {
 
 _gibcert_account_subcmds() {
     local -a subcmds
-    subcmds=('rotate-key:rotate an ACME account key')
+    subcmds=('rotate-key:rotate an ACME account key' 'deactivate:deactivate an ACME account at its CA')
     _describe 'subcommand' subcmds
 }
 
